@@ -18,7 +18,7 @@ db.exec(`
     id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE,
     salt TEXT NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'user',
     steps_goal INTEGER NOT NULL DEFAULT 8000,
-    calories_goal INTEGER NOT NULL DEFAULT 2000, gender TEXT, height_cm REAL, weight_kg REAL, bmi REAL,
+    calories_goal INTEGER NOT NULL DEFAULT 2000, gender TEXT, height_cm REAL, weight_kg REAL, bmi REAL, birth_date TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
   CREATE TABLE IF NOT EXISTS admin_actions (
@@ -95,7 +95,7 @@ if (priorWaterTable || priorWaterGoal || priorWaterGoals) {
   db.exec('VACUUM; PRAGMA wal_checkpoint(TRUNCATE);');
 }
 const userColumns = new Set(db.prepare('PRAGMA table_info(users)').all().map(column => column.name));
-for (const [name, declaration] of [['gender','TEXT'],['height_cm','REAL'],['weight_kg','REAL'],['bmi','REAL'],['last_active_at','TEXT']]) {
+for (const [name, declaration] of [['gender','TEXT'],['height_cm','REAL'],['weight_kg','REAL'],['bmi','REAL'],['birth_date','TEXT'],['last_active_at','TEXT']]) {
   if (!userColumns.has(name)) db.exec(`ALTER TABLE users ADD COLUMN ${name} ${declaration}`);
 }
 if (!db.prepare('PRAGMA table_info(activities)').all().some(column => column.name === 'steps')) db.exec('ALTER TABLE activities ADD COLUMN steps INTEGER');
@@ -152,6 +152,12 @@ function currentUser(req) {
 }
 const requireAuth = (req,res) => { const user = currentUser(req); if (!user) { json(res,401,{error:'Please sign in to continue.'}); return null; } return user; };
 function validDate(s) { if(typeof s!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(s))return false;const d=new Date(`${s}T00:00:00Z`);return !Number.isNaN(d.valueOf())&&d.toISOString().slice(0,10)===s; }
+function isAtLeast18(birthDate) {
+  const birth=new Date(`${birthDate}T00:00:00Z`),now=new Date();
+  let age=now.getUTCFullYear()-birth.getUTCFullYear();
+  if(now.getUTCMonth()<birth.getUTCMonth()||(now.getUTCMonth()===birth.getUTCMonth()&&now.getUTCDate()<birth.getUTCDate()))age--;
+  return age>=18;
+}
 function number(value, min, max, label, optional = false) {
   if ((value === '' || value == null) && optional) return null;
   const n = Number(value); if (!Number.isFinite(n) || n < min || n > max) throw new ValidationError(`${label} must be between ${min} and ${max}.`); return n;
@@ -212,14 +218,14 @@ async function handle(req,res) {
   try {
     if (route.startsWith('/api/')) {
       if (route === '/api/register' && req.method === 'POST') {
-        const body=await readBody(req);const name=string(body.name,80,'Name');if(!/^[\p{L}]+(?: +[\p{L}]+)*$/u.test(name))return json(res,400,{error:'Your name can contain letters and spaces only.'});const email=string(body.email,254,'Email').toLowerCase();
+        const body=await readBody(req);const name=string(body.name,80,'Name');if(!/^[\p{L}]+(?: +[\p{L}]+)*$/u.test(name))return json(res,400,{error:'Your name can contain letters and spaces only.'});const birthDate=String(body.birth_date??'');if(!validDate(birthDate))return json(res,400,{error:'Enter a valid date of birth.'});if(!isAtLeast18(birthDate))return json(res,400,{error:'You must be at least 18 to create an account.'});const email=string(body.email,254,'Email').toLowerCase();
         if(!isValidEmailAddress(email))return json(res,400,{error:'Enter a valid email address, such as name@example.com.'});
         if(typeof body.password!=='string'||body.password.length<10||body.password.length>200)return json(res,400,{error:'Password must be at least 10 characters.'});
         if(body.password!==body.confirm_password)return json(res,400,{error:'Passwords do not match.'});
         const gender=string(body.gender,40,'Gender');if(!['Female','Male','Non-binary','Prefer not to say'].includes(gender))return json(res,400,{error:'Choose a gender option.'});
         const heightText=String(body.height_cm??''),weightText=String(body.weight_kg??'');if(!/^\d+(?:\.\d+)?$/.test(heightText)||!/^\d+(?:\.\d+)?$/.test(weightText))return json(res,400,{error:'Enter height and weight using numbers only.'});const height=number(heightText,100,250,'Height'),weight=number(weightText,20,500,'Weight');const bmi=Number((weight/((height/100)**2)).toFixed(1));
         const salt=crypto.randomBytes(16).toString('hex');let userId;
-        try{const result=db.prepare('INSERT INTO users(name,email,salt,password_hash,gender,height_cm,weight_kg,bmi) VALUES(?,?,?,?,?,?,?,?)').run(name,email,salt,hashPassword(body.password,salt),gender,height,weight,bmi);userId=Number(result.lastInsertRowid);}catch(error){if(String(error.message).includes('UNIQUE'))return json(res,409,{error:'An account with that email already exists.'});throw error;}
+        try{const result=db.prepare('INSERT INTO users(name,email,salt,password_hash,gender,height_cm,weight_kg,bmi,birth_date) VALUES(?,?,?,?,?,?,?,?,?)').run(name,email,salt,hashPassword(body.password,salt),gender,height,weight,bmi,birthDate);userId=Number(result.lastInsertRowid);}catch(error){if(String(error.message).includes('UNIQUE'))return json(res,409,{error:'An account with that email already exists.'});throw error;}
         const user=db.prepare('SELECT id,name,email,role,steps_goal,calories_goal,gender,height_cm,weight_kg,bmi FROM users WHERE id=?').get(userId);
         return json(res,201,{user});
       }

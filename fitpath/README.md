@@ -35,7 +35,7 @@ The server listens on `0.0.0.0` and uses Render's `PORT` variable when present. 
 
 ## Signup and limitations
 
-Signup asks for a letters-only name, email, password confirmation, gender, height, and weight. Height and weight are required and used to calculate BMI. After signup, the email is prefilled on the sign-in form. Password reset, email confirmation, wearable connections, GPS tracking, and a full administration interface are not included.
+Signup asks for a letters-only name, email, password confirmation, gender, date of birth, height, and weight. Users must be at least 18, and height and weight are required to calculate BMI. After signup, the email is prefilled on the sign-in form. Password reset, email confirmation, wearable connections, GPS tracking, and a full administration interface are not included.
 ## Admin dashboard
 
 The admin dashboard is available at /admin and uses the same sign-in as the main app. To grant admin access:
