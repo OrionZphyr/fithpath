@@ -42,3 +42,4 @@
 @media(max-width:760px){.settings-grid{grid-template-columns:1fr}.settings-account-card{grid-column:auto}}
 .settings-link.active{background:#eaf2ec;color:var(--green-dark);font-weight:700}
 :root[data-theme="dark"] .settings-link.active{background:#263c30;color:#b3d9bc}
+.profile-targets-card{grid-column:1/-1}
