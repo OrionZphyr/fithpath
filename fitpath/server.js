@@ -289,6 +289,18 @@ async function handle(req,res) {
         if (user.role!=='admin') return json(res,403,{error:'Administrator access required.'});
         return json(res,200,{users:db.prepare('SELECT id,name,email,role,created_at FROM users ORDER BY id DESC').all()});
       }
+      const adminDelete = route.match(/^\/api\/admin\/users\/(\d+)$/);
+      if (adminDelete && req.method === 'DELETE') {
+        if (user.role !== 'admin') return json(res,403,{error:'Administrator access required.'});
+        const targetId = Number(adminDelete[1]);
+        if (!Number.isSafeInteger(targetId) || targetId < 1) return json(res,400,{error:'Invalid account ID.'});
+        if (targetId === user.id) return json(res,400,{error:'You cannot delete your own admin account.'});
+        const target = db.prepare('SELECT id,role FROM users WHERE id=?').get(targetId);
+        if (!target) return json(res,404,{error:'Account not found.'});
+        if (target.role === 'admin') return json(res,403,{error:'Admin accounts cannot be deleted here.'});
+        db.prepare('DELETE FROM users WHERE id=?').run(targetId);
+        return json(res,200,{ok:true});
+      }
       if (route === '/api/admin/summary' && req.method==='GET') {
         if (user.role!=='admin') return json(res,403,{error:'Administrator access required.'});
         return json(res,200,{users:db.prepare('SELECT count(*) count FROM users').get().count,activity_logs:db.prepare('SELECT count(*) count FROM activities').get().count,workouts:db.prepare('SELECT count(*) count FROM workout_sessions').get().count});
