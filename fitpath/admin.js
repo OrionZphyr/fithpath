@@ -1,38 +1,30 @@
-﻿const $=selector=>document.querySelector(selector);
+const $=selector=>document.querySelector(selector);
 const loginPanel=$('#login-panel'),dashboard=$('#dashboard'),loginForm=$('#login-form');
+let accountRows=[];
+const expandedAccounts=new Set();
 function escapeHtml(value){return String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));}
 async function api(url,options={}){const response=await fetch(url,{credentials:'same-origin',...options,headers:{'Content-Type':'application/json',...(options.headers||{})}});const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(data.error||'Request failed.');return data;}
 function showLogin(message=''){loginPanel.classList.remove('hidden');dashboard.classList.add('hidden');$('#login-error').textContent=message;}
-function formatLastActivity(value){if(!value)return 'Not recorded';const date=new Date(value);return Number.isNaN(date.valueOf())?'Not recorded':date.toLocaleString([], {dateStyle:'medium',timeStyle:'short'});}
-function showDashboard(user){loginPanel.classList.add('hidden');dashboard.classList.remove('hidden');$('#admin-greeting').textContent='Signed in as '+user.name+' · '+user.email;}
-async function loadDashboard(){
-  const [summary,result]=await Promise.all([api('/api/admin/summary'),api('/api/admin/users')]);
-  $('#user-count').textContent=summary.users;
-  $('#activity-count').textContent=summary.activity_logs;
-  $('#workout-count').textContent=summary.workouts;
-  $('#users-body').innerHTML=result.users.length?result.users.map(user=>{
-    const action=user.role==='admin'?'<span class="protected">Protected</span>':'<button class="danger delete-user" data-user-id="'+Number(user.id)+'" data-user-name="'+escapeHtml(user.name)+'">Delete</button>';
-    return '<tr><td>'+escapeHtml(user.name)+'</td><td>'+escapeHtml(user.email)+'</td><td><span class="role '+(user.role==='admin'?'admin':'')+'">'+escapeHtml(user.role)+'</span></td><td>'+escapeHtml(new Date(user.created_at+'Z').toLocaleDateString())+'</td><td>'+escapeHtml(formatLastActivity(user.last_active_at))+'</td><td>'+action+'</td></tr>';
-  }).join(''):'<tr><td colspan="6">No accounts yet.</td></tr>';
+function formatDate(value,withTime=false){if(!value)return 'Not recorded';const date=new Date(value);return Number.isNaN(date.valueOf())?'Not recorded':withTime?date.toLocaleString([], {dateStyle:'medium',timeStyle:'short'}):date.toLocaleDateString();}
+function metric(value,unit=''){return value===null||value===undefined||value===''?'Not provided':escapeHtml(String(value)+(unit?' '+unit:''));}
+function renderAccounts(){
+  const search=$('#account-search').value.trim().toLowerCase();const filter=$('#activity-filter').value;const now=Date.now(),thirtyDays=30*24*60*60*1000;
+  const users=accountRows.filter(user=>{const matchesSearch=!search||user.name.toLowerCase().includes(search)||user.email.toLowerCase().includes(search);const last=user.last_active_at?Date.parse(user.last_active_at):NaN;const never=!Number.isFinite(last);const matchesFilter=filter==='all'||(filter==='never'&&never)||(filter==='active'&&!never&&now-last<thirtyDays)||(filter==='inactive'&&!never&&now-last>=thirtyDays);return matchesSearch&&matchesFilter;});
+  $('#users-body').innerHTML=users.length?users.map(user=>{
+    const expanded=expandedAccounts.has(user.id);const action=user.role==='admin'?'<span class="protected">Protected</span>':'<button class="danger delete-user" data-user-id="'+Number(user.id)+'" data-user-name="'+escapeHtml(user.name)+'">Delete</button>';
+    const arrow='<button type="button" class="expand-user" data-expand-user="'+Number(user.id)+'" aria-expanded="'+expanded+'" aria-label="'+(expanded?'Hide':'Show')+' account details for '+escapeHtml(user.name)+'"><span aria-hidden="true">&#9662;</span></button>';
+    const row='<tr class="account-row"><td><span class="account-name">'+arrow+'<strong>'+escapeHtml(user.name)+'</strong></span></td><td>'+escapeHtml(user.email)+'</td><td><span class="role '+(user.role==='admin'?'admin':'')+'">'+escapeHtml(user.role)+'</span></td><td>'+escapeHtml(formatDate(user.created_at+'Z'))+'</td><td>'+escapeHtml(formatDate(user.last_active_at,true))+'</td><td>'+action+'</td></tr>';
+    if(!expanded)return row;
+    const details='<tr class="account-details-row"><td colspan="6"><div class="account-detail-grid"><div><span>Gender</span><strong>'+metric(user.gender)+'</strong></div><div><span>Height</span><strong>'+metric(user.height_cm,'cm')+'</strong></div><div><span>Weight</span><strong>'+metric(user.weight_kg,'kg')+'</strong></div><div><span>BMI</span><strong>'+metric(user.bmi)+'</strong></div><div><span>Step goal</span><strong>'+metric(user.steps_goal,'steps/day')+'</strong></div><div><span>Water goal</span><strong>'+metric(user.water_goal_ml,'ml/day')+'</strong></div><div><span>Calorie goal</span><strong>'+metric(user.calories_goal,'kcal/day')+'</strong></div><div><span>Activity logs</span><strong>'+Number(user.activity_count||0)+'</strong></div><div><span>Workout sessions</span><strong>'+Number(user.workout_count||0)+'</strong></div></div></td></tr>';
+    return row+details;
+  }).join(''):'<tr><td colspan="6">No accounts match these filters.</td></tr>';
 }
-async function enterAdmin(user){if(!user||user.role!=='admin'){showLogin('This account does not have admin access.');return;}showDashboard(user);try{await loadDashboard();}catch(error){$('#dashboard-error').textContent=error.message;}}
+function renderActions(actions){$('#actions-list').innerHTML=actions.length?actions.map(item=>'<div class="action-item"><div><strong>Deleted account #'+Number(item.target_user_id)+'</strong><span>By '+escapeHtml(item.admin_email)+'</span></div><time>'+escapeHtml(formatDate(item.created_at+'Z',true))+'</time></div>').join(''):'<p class="muted">No account actions recorded yet.</p>';}
+async function loadDashboard(){const [summary,result,history]=await Promise.all([api('/api/admin/summary'),api('/api/admin/users'),api('/api/admin/actions')]);$('#user-count').textContent=summary.users;$('#activity-count').textContent=summary.activity_logs;$('#workout-count').textContent=summary.workouts;accountRows=result.users;renderAccounts();renderActions(history.actions);}
+async function enterAdmin(user){if(!user||user.role!=='admin'){showLogin('This account does not have admin access.');return;}loginPanel.classList.add('hidden');dashboard.classList.remove('hidden');$('#admin-greeting').textContent='Signed in as '+user.name+' - '+user.email;try{await loadDashboard();}catch(error){$('#dashboard-error').textContent=error.message;}}
 loginForm.addEventListener('submit',async event=>{event.preventDefault();$('#login-error').textContent='';const body=Object.fromEntries(new FormData(loginForm));try{await api('/api/login',{method:'POST',body:JSON.stringify(body)});const me=await api('/api/me');if(!me.user||me.user.role!=='admin'){await api('/api/logout',{method:'POST'});showLogin('This account does not have admin access.');return;}await enterAdmin(me.user);}catch(error){showLogin(error.message);}});
-$('#users-body').addEventListener('click',async event=>{
-  const button=event.target.closest('button.delete-user');
-  if(!button)return;
-  const userId=button.dataset.userId;
-  const name=button.dataset.userName;
-  const choice=await window.fitpathConfirm({title:'Delete account?',message:'Permanently delete '+name+' and all of this account?s fitness logs? This cannot be undone.',confirmText:'Delete account',danger:true});if(!choice.confirmed)return;
-  button.disabled=true;
-  try{
-    $('#dashboard-error').textContent='';
-    await api('/api/admin/users/'+encodeURIComponent(userId),{method:'DELETE'});
-    await loadDashboard();
-  }catch(error){
-    $('#dashboard-error').textContent=error.message;
-    button.disabled=false;
-  }
-});
+$('#account-search').addEventListener('input',renderAccounts);$('#activity-filter').addEventListener('change',renderAccounts);
+$('#users-body').addEventListener('click',async event=>{const expand=event.target.closest('button[data-expand-user]');if(expand){const id=Number(expand.dataset.expandUser);expandedAccounts.has(id)?expandedAccounts.delete(id):expandedAccounts.add(id);renderAccounts();return;}const button=event.target.closest('button.delete-user');if(!button)return;const choice=await window.fitpathConfirm({title:'Delete account?',message:'Permanently delete '+button.dataset.userName+' and all fitness logs for this account? This cannot be undone.',confirmText:'Delete account',danger:true});if(!choice.confirmed)return;button.disabled=true;try{$('#dashboard-error').textContent='';await api('/api/admin/users/'+encodeURIComponent(button.dataset.userId),{method:'DELETE'});expandedAccounts.delete(Number(button.dataset.userId));await loadDashboard();}catch(error){$('#dashboard-error').textContent=error.message;button.disabled=false;}});
 $('#refresh').addEventListener('click',async()=>{try{$('#dashboard-error').textContent='';await loadDashboard();}catch(error){$('#dashboard-error').textContent=error.message;}});
 $('#signout').addEventListener('click',async()=>{const choice=await window.fitpathConfirm({title:'Sign out?',message:'Are you sure you want to log out of the admin dashboard?',confirmText:'Sign out'});if(!choice.confirmed)return;try{await api('/api/logout',{method:'POST'});}finally{loginForm.reset();showLogin('You have signed out.');}});
 (async()=>{try{const me=await api('/api/me');if(me.user)await enterAdmin(me.user);else showLogin();}catch{showLogin();}})();

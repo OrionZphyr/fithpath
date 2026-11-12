@@ -21,6 +21,15 @@ db.exec(`
     calories_goal INTEGER NOT NULL DEFAULT 2000, gender TEXT, height_cm REAL, weight_kg REAL, bmi REAL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
+  CREATE TABLE IF NOT EXISTS admin_actions (
+    id INTEGER PRIMARY KEY,
+    admin_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    admin_email TEXT NOT NULL,
+    action TEXT NOT NULL,
+    target_user_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX IF NOT EXISTS idx_admin_actions_created ON admin_actions(created_at);
   CREATE TABLE IF NOT EXISTS sessions (
     token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     expires_at INTEGER NOT NULL
@@ -289,7 +298,17 @@ async function handle(req,res) {
       if (workoutDelete && req.method==='DELETE') { const result=db.prepare('DELETE FROM workout_sessions WHERE id=? AND user_id=?').run(Number(workoutDelete[1]),user.id);return result.changes?json(res,200,{ok:true}):json(res,404,{error:'Workout not found.'}); }
       if (route === '/api/admin/users' && req.method==='GET') {
         if (user.role!=='admin') return json(res,403,{error:'Administrator access required.'});
-        return json(res,200,{users:db.prepare('SELECT id,name,email,role,created_at,last_active_at FROM users ORDER BY id DESC').all()});
+        const users = db.prepare(
+          'SELECT u.id,u.name,u.email,u.role,u.created_at,u.last_active_at,u.gender,u.height_cm,u.weight_kg,u.bmi,u.steps_goal,u.water_goal_ml,u.calories_goal,' +
+          '(SELECT count(*) FROM activities a WHERE a.user_id=u.id) AS activity_count,' +
+          '(SELECT count(*) FROM workout_sessions w WHERE w.user_id=u.id) AS workout_count ' +
+          'FROM users u ORDER BY u.id DESC'
+        ).all();
+        return json(res,200,{users});
+      }
+      if (route === '/api/admin/actions' && req.method==='GET') {
+        if (user.role!=='admin') return json(res,403,{error:'Administrator access required.'});
+        return json(res,200,{actions:db.prepare('SELECT id,admin_email,action,target_user_id,created_at FROM admin_actions ORDER BY id DESC LIMIT 50').all()});
       }
       const adminDelete = route.match(/^\/api\/admin\/users\/(\d+)$/);
       if (adminDelete && req.method === 'DELETE') {
@@ -300,7 +319,12 @@ async function handle(req,res) {
         const target = db.prepare('SELECT id,role FROM users WHERE id=?').get(targetId);
         if (!target) return json(res,404,{error:'Account not found.'});
         if (target.role === 'admin') return json(res,403,{error:'Admin accounts cannot be deleted here.'});
-        db.prepare('DELETE FROM users WHERE id=?').run(targetId);
+        db.exec('BEGIN IMMEDIATE');
+        try {
+          db.prepare('INSERT INTO admin_actions(admin_user_id,admin_email,action,target_user_id) VALUES(?,?,?,?)').run(user.id,user.email,'delete_account',targetId);
+          db.prepare('DELETE FROM users WHERE id=?').run(targetId);
+          db.exec('COMMIT');
+        } catch (error) { db.exec('ROLLBACK'); throw error; }
         return json(res,200,{ok:true});
       }
       if (route === '/api/admin/summary' && req.method==='GET') {
