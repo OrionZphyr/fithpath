@@ -1,4 +1,4 @@
-const http = require('node:http');
+﻿const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
@@ -84,6 +84,17 @@ for (const [name, declaration] of [['gender','TEXT'],['height_cm','REAL'],['weig
   if (!userColumns.has(name)) db.exec(`ALTER TABLE users ADD COLUMN ${name} ${declaration}`);
 }
 if (!db.prepare('PRAGMA table_info(activities)').all().some(column => column.name === 'steps')) db.exec('ALTER TABLE activities ADD COLUMN steps INTEGER');
+const configuredAdminEmail = String(process.env.ADMIN_EMAIL || '').trim().toLowerCase();
+const configuredAdminPassword = process.env.ADMIN_PASSWORD || '';
+if (configuredAdminEmail) {
+  const existingAdmin = db.prepare('SELECT id FROM users WHERE lower(email)=?').get(configuredAdminEmail);
+  if (existingAdmin) db.prepare("UPDATE users SET role='admin',name='Zeus' WHERE id=?").run(existingAdmin.id);
+  else if (configuredAdminPassword) {
+    if (configuredAdminPassword.length < 10) throw new Error('ADMIN_PASSWORD must be at least 10 characters.');
+    const adminSalt = crypto.randomBytes(16).toString('hex');
+    db.prepare("INSERT INTO users(name,email,salt,password_hash,role) VALUES(?,?,?,?, 'admin')").run('Zeus',configuredAdminEmail,adminSalt,hashPassword(configuredAdminPassword,adminSalt));
+  }
+}
 
 const foodSeeds = [
   ['Rolled oats','Grains','50 g',190,6.5,33,3.5],['Greek yogurt','Dairy','170 g',100,17,6,0],['Banana','Fruit','1 medium',105,1.3,27,0.4],
@@ -274,13 +285,17 @@ async function handle(req,res) {
       if (delMatch && req.method === 'DELETE') return safeRecordDelete(delMatch[1],user.id,delMatch[2])?json(res,200,{ok:true}):json(res,404,{error:'Record not found.'});
       const workoutDelete=route.match(/^\/api\/workouts\/(\d+)$/);
       if (workoutDelete && req.method==='DELETE') { const result=db.prepare('DELETE FROM workout_sessions WHERE id=? AND user_id=?').run(Number(workoutDelete[1]),user.id);return result.changes?json(res,200,{ok:true}):json(res,404,{error:'Workout not found.'}); }
+      if (route === '/api/admin/users' && req.method==='GET') {
+        if (user.role!=='admin') return json(res,403,{error:'Administrator access required.'});
+        return json(res,200,{users:db.prepare('SELECT id,name,email,role,created_at FROM users ORDER BY id DESC').all()});
+      }
       if (route === '/api/admin/summary' && req.method==='GET') {
         if (user.role!=='admin') return json(res,403,{error:'Administrator access required.'});
         return json(res,200,{users:db.prepare('SELECT count(*) count FROM users').get().count,activity_logs:db.prepare('SELECT count(*) count FROM activities').get().count,workouts:db.prepare('SELECT count(*) count FROM workout_sessions').get().count});
       }
       return json(res,404,{error:'API route not found.'});
     }
-    const pathname = route === '/' ? '/index.html' : route;
+    const pathname = route === '/' ? '/index.html' : (route === '/admin' || route === '/admin/' ? '/admin.html' : route);
     const resolved = path.resolve(ROOT, `.${pathname}`);
     if (!resolved.startsWith(ROOT + path.sep)) return json(res,403,{error:'Not found.'});
     fs.readFile(resolved,(err,content)=>{ if(err)return json(res,404,{error:'Page not found.'}); res.writeHead(200,{'Content-Type':mimeTypes[path.extname(resolved)]||'application/octet-stream','X-Content-Type-Options':'nosniff','Referrer-Policy':'same-origin','X-Frame-Options':'DENY','Content-Security-Policy':"default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"});res.end(content); });

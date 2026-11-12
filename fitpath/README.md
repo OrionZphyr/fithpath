@@ -1,4 +1,4 @@
-# Fitpath
+﻿# Fitpath
 
 Fitpath is a responsive fitness tracker built with browser JavaScript, Node.js, and SQLite. It supports activity, workout, nutrition, hydration, body, sleep, and goal logs. User accounts use password hashing.
 
@@ -36,3 +36,12 @@ The server listens on `0.0.0.0` and uses Render's `PORT` variable when present. 
 ## Signup and limitations
 
 Signup asks for a name, email, password confirmation, and gender. Height and weight are optional and used to calculate BMI. After signup, the email is prefilled on the sign-in form. Password reset, email confirmation, wearable connections, GPS tracking, and a full administration interface are not included.
+## Admin dashboard
+
+The admin dashboard is available at /admin and uses the same sign-in as the main app. To grant admin access:
+1. Create or use the account that should administer Fitpath.
+2. In Render, open the service Environment settings and add ADMIN_EMAIL with that account's email. If there is no existing account yet, also set ADMIN_PASSWORD (at least 10 characters) to create the Zeus admin account securely at startup.
+3. Save and redeploy/restart the service. On startup, Fitpath promotes the matching account and sets its display name to Zeus. If no account exists, the two environment variables create it.
+4. Sign in at https://your-domain/admin.
+
+Admin access is checked by the server. Public signup cannot assign the admin role. The dashboard shows account totals and a user list; it does not expose passwords.
