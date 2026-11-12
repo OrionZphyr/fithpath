@@ -234,7 +234,7 @@ async function handle(req,res) {
       }
       if (route === '/api/activities' && req.method === 'POST') {
         const b=await readBody(req); if (!validDate(b.date)) throw new ValidationError('Choose a valid activity date.');
-        const type=string(b.type,40,'Activity'); const duration=number(b.duration,1,1440,'Duration'); const distance=number(b.distance,0,2000,'Distance',true); const steps=number(b.steps,0,200000,'Steps',true); const calories=number(b.calories,0,10000,'Calories',true);
+        const type=b.type==='Other'?`Other: ${string(b.other_activity,33,'Activity description')}`:string(b.type,40,'Activity'); const duration=number(b.duration,1,1440,'Duration'); const distance=number(b.distance,0,2000,'Distance',true); const steps=number(b.steps,0,200000,'Steps',true); const calories=number(b.calories,0,10000,'Calories',true);
         const intensity=['Easy','Moderate','Hard'].includes(b.intensity)?b.intensity:'Moderate'; const notes=string(b.notes,500,'Notes',true);
         db.prepare('INSERT INTO activities(user_id,activity_type,activity_date,duration_min,distance_km,steps,intensity,notes,calories) VALUES(?,?,?,?,?,?,?,?,?)').run(user.id,type,b.date,duration,distance,steps,intensity,notes,calories);
         return json(res,201,{ok:true});
@@ -271,7 +271,7 @@ async function handle(req,res) {
         const table={activity:'activities',food:'food_logs',body:'body_metrics',sleep:'sleep_logs',goal:'goals',workout:'workout_sessions'}[kind];
         if(!db.prepare(`SELECT id FROM ${table} WHERE id=? AND user_id=?`).get(id,user.id))return json(res,404,{error:'Record not found.'});
         if(kind==='activity'){
-          if(!validDate(b.date))throw new ValidationError('Choose a valid activity date.');const type=string(b.type,40,'Activity'),duration=number(b.duration,1,1440,'Duration'),distance=number(b.distance,0,2000,'Distance',true),steps=number(b.steps,0,200000,'Steps',true),calories=number(b.calories,0,10000,'Calories',true),intensity=['Easy','Moderate','Hard'].includes(b.intensity)?b.intensity:'Moderate',notes=string(b.notes,500,'Notes',true);
+          if(!validDate(b.date))throw new ValidationError('Choose a valid activity date.');const type=b.type==='Other'?`Other: ${string(b.other_activity,33,'Activity description')}`:string(b.type,40,'Activity'),duration=number(b.duration,1,1440,'Duration'),distance=number(b.distance,0,2000,'Distance',true),steps=number(b.steps,0,200000,'Steps',true),calories=number(b.calories,0,10000,'Calories',true),intensity=['Easy','Moderate','Hard'].includes(b.intensity)?b.intensity:'Moderate',notes=string(b.notes,500,'Notes',true);
           db.prepare('UPDATE activities SET activity_type=?,activity_date=?,duration_min=?,distance_km=?,steps=?,intensity=?,notes=?,calories=? WHERE id=? AND user_id=?').run(type,b.date,duration,distance,steps,intensity,notes,calories,id,user.id);
         }else if(kind==='food'){
           const foodId=number(b.food_id,1,1000000,'Food'),servings=number(b.servings,0.05,50,'Servings'),meal=['Breakfast','Lunch','Dinner','Snack'].includes(b.meal)?b.meal:'Snack',date=validDate(b.date)?b.date:today();if(!db.prepare('SELECT id FROM foods WHERE id=?').get(foodId))throw new ValidationError('Choose a food from the list.');
