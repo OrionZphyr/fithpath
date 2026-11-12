@@ -34,5 +34,5 @@ $('#users-body').addEventListener('click',async event=>{
   }
 });
 $('#refresh').addEventListener('click',async()=>{try{$('#dashboard-error').textContent='';await loadDashboard();}catch(error){$('#dashboard-error').textContent=error.message;}});
-$('#signout').addEventListener('click',async()=>{try{await api('/api/logout',{method:'POST'});}finally{loginForm.reset();showLogin('You have signed out.');}});
+$('#signout').addEventListener('click',async()=>{const choice=await window.fitpathConfirm({title:'Sign out?',message:'Are you sure you want to log out of the admin dashboard?',confirmText:'Sign out'});if(!choice.confirmed)return;try{await api('/api/logout',{method:'POST'});}finally{loginForm.reset();showLogin('You have signed out.');}});
 (async()=>{try{const me=await api('/api/me');if(me.user)await enterAdmin(me.user);else showLogin();}catch{showLogin();}})();
