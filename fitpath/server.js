@@ -80,7 +80,7 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_workouts_user_date ON workout_sessions(user_id, workout_date);
 `);
 const userColumns = new Set(db.prepare('PRAGMA table_info(users)').all().map(column => column.name));
-for (const [name, declaration] of [['gender','TEXT'],['height_cm','REAL'],['weight_kg','REAL'],['bmi','REAL']]) {
+for (const [name, declaration] of [['gender','TEXT'],['height_cm','REAL'],['weight_kg','REAL'],['bmi','REAL'],['last_active_at','TEXT']]) {
   if (!userColumns.has(name)) db.exec(`ALTER TABLE users ADD COLUMN ${name} ${declaration}`);
 }
 if (!db.prepare('PRAGMA table_info(activities)').all().some(column => column.name === 'steps')) db.exec('ALTER TABLE activities ADD COLUMN steps INTEGER');
@@ -132,6 +132,7 @@ function currentUser(req) {
   const token = cookieToken(req); if (!token) return null;
   const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
   const row = db.prepare('SELECT users.id, users.name, users.email, users.role, users.steps_goal, users.water_goal_ml, users.calories_goal, users.gender, users.height_cm, users.weight_kg, users.bmi FROM sessions JOIN users ON users.id=sessions.user_id WHERE sessions.token_hash=? AND sessions.expires_at>?').get(tokenHash, Date.now());
+  if (row) db.prepare('UPDATE users SET last_active_at=? WHERE id=?').run(new Date().toISOString(), row.id);
   return row || null;
 }
 const requireAuth = (req,res) => { const user = currentUser(req); if (!user) { json(res,401,{error:'Please sign in to continue.'}); return null; } return user; };
@@ -184,6 +185,7 @@ async function handle(req,res) {
         if (!row || typeof body.password !== 'string' || !crypto.timingSafeEqual(Buffer.from(hashPassword(body.password,row?.salt || 'fitpath-dummy')),Buffer.from(row?.password_hash || hashPassword('invalid','fitpath-dummy')))) return json(res,401,{error:'Email or password is incorrect.'});
         const token = crypto.randomBytes(32).toString('base64url'); const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
         db.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)').run(tokenHash,row.id,Date.now()+30*86400000);
+        db.prepare('UPDATE users SET last_active_at=? WHERE id=?').run(new Date().toISOString(),row.id);
         const user = db.prepare('SELECT id,name,email,role,steps_goal,water_goal_ml,calories_goal,gender,height_cm,weight_kg,bmi FROM users WHERE id=?').get(row.id);
         return json(res,200,{user},{'Set-Cookie':`fitpath_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000${SECURE_COOKIE}`});
       }
@@ -287,7 +289,7 @@ async function handle(req,res) {
       if (workoutDelete && req.method==='DELETE') { const result=db.prepare('DELETE FROM workout_sessions WHERE id=? AND user_id=?').run(Number(workoutDelete[1]),user.id);return result.changes?json(res,200,{ok:true}):json(res,404,{error:'Workout not found.'}); }
       if (route === '/api/admin/users' && req.method==='GET') {
         if (user.role!=='admin') return json(res,403,{error:'Administrator access required.'});
-        return json(res,200,{users:db.prepare('SELECT id,name,email,role,created_at FROM users ORDER BY id DESC').all()});
+        return json(res,200,{users:db.prepare('SELECT id,name,email,role,created_at,last_active_at FROM users ORDER BY id DESC').all()});
       }
       const adminDelete = route.match(/^\/api\/admin\/users\/(\d+)$/);
       if (adminDelete && req.method === 'DELETE') {
