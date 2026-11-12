@@ -1,21 +1,108 @@
 const $ = (selector, root = document) => root.querySelector(selector);
-function keepWordsAndNumbersOnly(field) {
-  const clean = value => String(value).replace(/\s+/g, ' ').replace(/[^\p{L}\p{N} ]/gu, '');
-  const cursor = field.selectionStart;
-  const before = field.value.slice(0, cursor ?? field.value.length);
-  const value = clean(field.value);
-  if (value === field.value) return;
-  field.value = value;
-  const next = clean(before).length;
-  field.setSelectionRange(next, next);
+function installInputRules() {
+  const ignoredForms = '#auth-form, #login-form, #confirm-form';
+  const textSelector = 'input:not([type]), input[type="text"], input[type="search"], textarea';
+  const editable = field => field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement;
+  const excluded = field => !!field.closest(ignoredForms);
+  const kind = field => field.type === 'number' ? 'number' : 'text';
+  const cleanNumber = value => {
+    const cleaned = String(value).replace(/[^0-9.]/g, '');
+    const dot = cleaned.indexOf('.');
+    return dot < 0 ? cleaned : cleaned.slice(0, dot + 1) + cleaned.slice(dot + 1).replace(/\./g, '');
+  };
+  const cleanText = value => String(value).replace(/\s+/g, ' ').replace(/[^\p{L}\p{N} ]/gu, '');
+  const allowed = (field, value) => kind(field) === 'number'
+    ? /^\d*\.?\d*$/.test(value)
+    : /^[\p{L}\p{N} ]*$/u.test(value);
+  function prepare(field) {
+    let wrap = field.parentElement?.classList.contains('input-guard-wrap') ? field.parentElement : null;
+    if (!wrap) {
+      wrap = document.createElement('span');
+      wrap.className = 'input-guard-wrap';
+      field.parentNode.insertBefore(wrap, field);
+      wrap.appendChild(field);
+    }
+    let note = wrap.querySelector('.input-guard-note');
+    if (!note) {
+      note = document.createElement('span');
+      note.className = 'input-guard-note';
+      note.setAttribute('role', 'status');
+      note.setAttribute('aria-live', 'polite');
+      note.hidden = true;
+      wrap.appendChild(note);
+    }
+    return note;
+  }
+  function notify(field) {
+    const note = prepare(field);
+    note.textContent = kind(field) === 'number'
+      ? 'Only numbers are allowed.'
+      : 'Only letters, numbers, and spaces are allowed.';
+    note.hidden = false;
+  }
+  function clear(field) {
+    const wrap = field.parentElement?.classList.contains('input-guard-wrap') ? field.parentElement : null;
+    const note = wrap?.querySelector('.input-guard-note');
+    if (note) note.hidden = true;
+  }
+  function matches(field) {
+    return editable(field) && (field.matches(textSelector) || field.type === 'number') && !excluded(field);
+  }
+
+  document.addEventListener('beforeinput', event => {
+    const field = event.target;
+    if (!matches(field) || event.inputType?.startsWith('delete')) return;
+    if (event.data === null) return;
+    const start = field.selectionStart ?? field.value.length;
+    const end = field.selectionEnd ?? start;
+    const candidate = field.value.slice(0, start) + event.data + field.value.slice(end);
+    if (!allowed(field, candidate)) {
+      event.preventDefault();
+      notify(field);
+    } else clear(field);
+  });
+
+  document.addEventListener('keydown', event => {
+    const field = event.target;
+    if (!matches(field) || field.type !== 'number' || event.ctrlKey || event.metaKey || event.altKey || event.key.length !== 1) return;
+    const start = field.selectionStart ?? field.value.length;
+    const end = field.selectionEnd ?? start;
+    const candidate = field.value.slice(0, start) + event.key + field.value.slice(end);
+    if (!allowed(field, candidate)) {
+      event.preventDefault();
+      notify(field);
+    }
+  });
+
+  document.addEventListener('paste', event => {
+    const field = event.target;
+    if (!matches(field)) return;
+    const pasted = event.clipboardData?.getData('text') ?? '';
+    const start = field.selectionStart ?? field.value.length;
+    const end = field.selectionEnd ?? start;
+    const candidate = field.value.slice(0, start) + pasted + field.value.slice(end);
+    if (!allowed(field, candidate)) {
+      event.preventDefault();
+      notify(field);
+    } else clear(field);
+  });
+
+  document.addEventListener('input', event => {
+    const field = event.target;
+    if (!matches(field)) return;
+    const cleaned = kind(field) === 'number' ? cleanNumber(field.value) : cleanText(field.value);
+    if (cleaned !== field.value) {
+      const before = field.value.slice(0, field.selectionStart ?? field.value.length);
+      field.value = cleaned;
+      if (field.type !== 'number') {
+        const position = cleanText(before).length;
+        field.setSelectionRange(position, position);
+      }
+      notify(field);
+    } else clear(field);
+  });
 }
-document.addEventListener('input', event => {
-  const field = event.target;
-  if (!(field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement)) return;
-  if (!field.matches('input:not([type]), input[type="text"], input[type="search"], textarea')) return;
-  if (field.closest('#auth-form, #login-form, #confirm-form')) return;
-  keepWordsAndNumbersOnly(field);
-});
+installInputRules();
 
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const app = $('#app');
