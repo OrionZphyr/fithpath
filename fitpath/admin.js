@@ -22,7 +22,7 @@ $('#users-body').addEventListener('click',async event=>{
   if(!button)return;
   const userId=button.dataset.userId;
   const name=button.dataset.userName;
-  const choice=await window.fitpathConfirm({title:'Delete account?',message:'Permanently delete '+name+' and all of this account’s fitness logs? This cannot be undone.',confirmText:'Delete account',danger:true});if(!choice.confirmed)return;
+  const choice=await window.fitpathConfirm({title:'Delete account?',message:'Permanently delete '+name+' and all of this account?s fitness logs? This cannot be undone.',confirmText:'Delete account',danger:true});if(!choice.confirmed)return;
   button.disabled=true;
   try{
     $('#dashboard-error').textContent='';
