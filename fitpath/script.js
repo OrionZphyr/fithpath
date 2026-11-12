@@ -1,18 +1,27 @@
 const $ = (selector, root = document) => root.querySelector(selector);
 function installInputRules() {
-  const ignoredForms = '#auth-form, #login-form, #confirm-form';
+  const ignoredForms = '#login-form, #confirm-form';
   const textSelector = 'input:not([type]), input[type="text"], input[type="search"], textarea';
   const editable = field => field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement;
-  const excluded = field => !!field.closest(ignoredForms);
-  const kind = field => field.type === 'number' ? 'number' : 'text';
+  const excluded = field => {
+    const auth = field.closest('#auth-form');
+    if (auth) {
+      const signingUp = !$('#name-wrap').classList.contains('hidden');
+      return !(signingUp && (field.name === 'name' || field.id === 'signup-height' || field.id === 'signup-weight'));
+    }
+    return !!field.closest(ignoredForms);
+  };
+  const kind = field => field.closest('#auth-form') && field.name === 'name' ? 'name' : field.type === 'number' ? 'number' : 'text';
   const cleanNumber = value => {
     const cleaned = String(value).replace(/[^0-9.]/g, '');
     const dot = cleaned.indexOf('.');
     return dot < 0 ? cleaned : cleaned.slice(0, dot + 1) + cleaned.slice(dot + 1).replace(/\./g, '');
   };
   const cleanText = value => String(value).replace(/\s+/g, ' ').replace(/[^\p{L}\p{N} ]/gu, '');
+  const cleanName = value => String(value).replace(/\s+/g, ' ').replace(/[^\p{L} ]/gu, '');
   const allowed = (field, value) => kind(field) === 'number'
     ? /^\d*\.?\d*$/.test(value)
+    : kind(field) === 'name' ? /^[\p{L} ]*$/u.test(value)
     : /^[\p{L}\p{N} ]*$/u.test(value);
   function prepare(field) {
     let wrap = field.parentElement?.classList.contains('input-guard-wrap') ? field.parentElement : null;
@@ -37,6 +46,7 @@ function installInputRules() {
     const note = prepare(field);
     note.textContent = kind(field) === 'number'
       ? 'Only numbers are allowed.'
+      : kind(field) === 'name' ? 'Only letters and spaces are allowed.'
       : 'Only letters, numbers, and spaces are allowed.';
     note.hidden = false;
   }
@@ -90,12 +100,12 @@ function installInputRules() {
   document.addEventListener('input', event => {
     const field = event.target;
     if (!matches(field)) return;
-    const cleaned = kind(field) === 'number' ? cleanNumber(field.value) : cleanText(field.value);
+    const cleaned = kind(field) === 'number' ? cleanNumber(field.value) : kind(field) === 'name' ? cleanName(field.value) : cleanText(field.value);
     if (cleaned !== field.value) {
-      const before = field.value.slice(0, field.selectionStart ?? field.value.length);
+      const before = field.type === 'number' ? '' : field.value.slice(0, field.selectionStart ?? field.value.length);
       field.value = cleaned;
       if (field.type !== 'number') {
-        const position = cleanText(before).length;
+        const position = (kind(field) === 'name' ? cleanName(before) : cleanText(before)).length;
         field.setSelectionRange(position, position);
       }
       notify(field);
@@ -135,11 +145,11 @@ function showApp() { authScreen.classList.add('hidden'); app.classList.remove('h
 function updateAuthMode() {
   const register=state.authMode==='register';$('#auth-title').textContent=register?'Start with one small step.':'Make space for better.';$('#auth-subtitle').textContent=register?'Create your private Fitpath account.':'Sign in to keep your progress moving.';$('#auth-submit').innerHTML=register?'Create account <span>&rarr;</span>':'Sign in <span>&rarr;</span>';
 $('#name-wrap').classList.toggle('hidden',!register);$('#confirm-password-wrap').classList.toggle('hidden',!register);$('#gender-wrap').classList.toggle('hidden',!register);$('#signup-measurements').classList.toggle('hidden',!register);
-$('#name-wrap input').required=register;$('#confirm-password-wrap input').required=register;$('#gender-wrap select').required=register;$('#auth-form [name=password]').autocomplete=register?'new-password':'current-password';
+$('#name-wrap input').required=register;$('#confirm-password-wrap input').required=register;$('#gender-wrap select').required=register;$('#signup-height').required=register;$('#signup-weight').required=register;$('#auth-form [name=password]').autocomplete=register?'new-password':'current-password';
   const email=$('#auth-form [name=email]');if(!register&&state.pendingEmail)email.value=state.pendingEmail;$('#auth-notice').textContent=state.authNotice;$('#auth-notice').classList.toggle('hidden',!state.authNotice);
   $('#auth-switch').innerHTML=register?'Already have an account? <button type="button">Sign in</button>':'New to Fitpath? <button type="button">Create an account</button>';$('#auth-switch button').onclick=()=>{state.authMode=register?'login':'register';state.authNotice='';$('#auth-error').textContent='';updateAuthMode();};
 }
-$('#auth-form').addEventListener('submit',async event=>{event.preventDefault();const form=event.currentTarget,register=state.authMode==='register',body=Object.fromEntries(new FormData(form));$('#auth-error').textContent='';try{if(register){body.email=String(body.email||'').trim();if(body.password!==body.confirm_password)throw new Error('Passwords do not match.');if((body.height_cm&&!body.weight_kg)||(!body.height_cm&&body.weight_kg))throw new Error('Enter both height and weight to calculate BMI, or leave both blank.');}const result=await api(register?'/api/register':'/api/login',{method:'POST',body:JSON.stringify(body)});if(register){state.pendingEmail=body.email;state.authMode='login';state.authNotice='Account created. Sign in below to get started.';form.reset();updateAuthMode();$('#auth-form [name=email]').value=state.pendingEmail;$('#auth-form [name=password]').focus();return;}state.user=result.user;state.pendingEmail='';state.authNotice='';form.reset();state.page='dashboard';showApp();}catch(error){$('#auth-error').textContent=error.message;}});
+$('#auth-form').addEventListener('submit',async event=>{event.preventDefault();const form=event.currentTarget,register=state.authMode==='register',body=Object.fromEntries(new FormData(form));$('#auth-error').textContent='';try{if(register){body.name=String(body.name||'').trim();body.email=String(body.email||'').trim();if(!/^[\p{L}]+(?: +[\p{L}]+)*$/u.test(body.name))throw new Error('Your name can contain letters and spaces only.');if(body.password!==body.confirm_password)throw new Error('Passwords do not match.');if(!body.height_cm||!body.weight_kg)throw new Error('Enter both height and weight to calculate BMI.');}const result=await api(register?'/api/register':'/api/login',{method:'POST',body:JSON.stringify(body)});if(register){state.pendingEmail=body.email;state.authMode='login';state.authNotice='Account created. Sign in below to get started.';form.reset();updateAuthMode();$('#auth-form [name=email]').value=state.pendingEmail;$('#auth-form [name=password]').focus();return;}state.user=result.user;state.pendingEmail='';state.authNotice='';form.reset();state.page='dashboard';showApp();}catch(error){$('#auth-error').textContent=error.message;}});
 $('#signout').addEventListener('click',async()=>{setMenuOpen(false);const choice=await window.fitpathConfirm({title:'Sign out?',message:'Are you sure you want to log out?',confirmText:'Sign out'});if(!choice.confirmed)return;try{await api('/api/logout',{method:'POST'});}catch{}state.user=null;state.logs=null;state.authMode='login';showAuth();});
 
 function renderProfile(){if(!state.user)return;$('#profile-name').textContent=state.user.name;$('#avatar-letter').textContent=state.user.name.trim().slice(0,1).toUpperCase();$('#today-label').textContent=new Intl.DateTimeFormat(undefined,{weekday:'short',month:'short',day:'numeric'}).format(new Date());const hour=new Date().getHours();$('#greeting').textContent=`Good ${hour<12?'morning':hour<18?'afternoon':'evening'}, ${state.user.name.split(' ')[0]}.`;$('#move-goal').textContent='of 30 min goal';$('#calorie-goal').textContent=`of ${fmt(state.user.calories_goal)} kcal`;}

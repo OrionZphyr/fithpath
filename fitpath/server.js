@@ -180,12 +180,12 @@ async function handle(req,res) {
   try {
     if (route.startsWith('/api/')) {
       if (route === '/api/register' && req.method === 'POST') {
-        const body=await readBody(req);const name=string(body.name,80,'Name');const email=string(body.email,254,'Email').toLowerCase();
+        const body=await readBody(req);const name=string(body.name,80,'Name');if(!/^[\p{L}]+(?: +[\p{L}]+)*$/u.test(name))return json(res,400,{error:'Your name can contain letters and spaces only.'});const email=string(body.email,254,'Email').toLowerCase();
         if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))return json(res,400,{error:'Enter a valid email address.'});
         if(typeof body.password!=='string'||body.password.length<10||body.password.length>200)return json(res,400,{error:'Password must be at least 10 characters.'});
         if(body.password!==body.confirm_password)return json(res,400,{error:'Passwords do not match.'});
         const gender=string(body.gender,40,'Gender');if(!['Female','Male','Non-binary','Prefer not to say'].includes(gender))return json(res,400,{error:'Choose a gender option.'});
-        const height=number(body.height_cm,100,250,'Height',true),weight=number(body.weight_kg,20,500,'Weight',true);if((height===null)!==(weight===null))return json(res,400,{error:'Enter both height and weight to calculate BMI, or leave both blank.'});const bmi=height===null?null:Number((weight/((height/100)**2)).toFixed(1));
+        const heightText=String(body.height_cm??''),weightText=String(body.weight_kg??'');if(!/^\d+(?:\.\d+)?$/.test(heightText)||!/^\d+(?:\.\d+)?$/.test(weightText))return json(res,400,{error:'Enter height and weight using numbers only.'});const height=number(heightText,100,250,'Height'),weight=number(weightText,20,500,'Weight');const bmi=Number((weight/((height/100)**2)).toFixed(1));
         const salt=crypto.randomBytes(16).toString('hex');let userId;
         try{const result=db.prepare('INSERT INTO users(name,email,salt,password_hash,gender,height_cm,weight_kg,bmi) VALUES(?,?,?,?,?,?,?,?)').run(name,email,salt,hashPassword(body.password,salt),gender,height,weight,bmi);userId=Number(result.lastInsertRowid);}catch(error){if(String(error.message).includes('UNIQUE'))return json(res,409,{error:'An account with that email already exists.'});throw error;}
         const user=db.prepare('SELECT id,name,email,role,steps_goal,calories_goal,gender,height_cm,weight_kg,bmi FROM users WHERE id=?').get(userId);
