@@ -153,6 +153,18 @@ function number(value, min, max, label, optional = false) {
   if ((value === '' || value == null) && optional) return null;
   const n = Number(value); if (!Number.isFinite(n) || n < min || n > max) throw new ValidationError(`${label} must be between ${min} and ${max}.`); return n;
 }
+function isValidEmailAddress(value) {
+  const email=String(value??'');
+  if(email.length>254)return false;
+  const at=email.lastIndexOf('@');
+  if(at<1||at!==email.indexOf('@'))return false;
+  const local=email.slice(0,at),domain=email.slice(at+1);
+  if(local.length>64||! /^[\p{L}\p{N}!#$%&'*+/=?^_`{|}~-]+(?:\.[\p{L}\p{N}!#$%&'*+/=?^_`{|}~-]+)*$/u.test(local))return false;
+  if(domain.length>253)return false;
+  const labels=domain.split('.');
+  const labelPattern=/^[\p{L}\p{N}](?:[\p{L}\p{N}-]{0,61}[\p{L}\p{N}])?$/u;
+  return labels.length>=2&&labels.every(label=>label.length<=63&&labelPattern.test(label))&&labels.at(-1).length>=2&&/[\p{L}]/u.test(labels.at(-1));
+}
 function string(value, max, label, optional = false) { const s = String(value ?? '').trim(); if (!s && optional) return ''; if (!s || s.length > max) throw new ValidationError(`${label} is required and must be under ${max} characters.`); return s; }
 const today = () => new Date().toISOString().slice(0,10);
 function localTimestamp(date = today()) { return `${date}T${new Date().toISOString().slice(11,19)}Z`; }
@@ -181,7 +193,7 @@ async function handle(req,res) {
     if (route.startsWith('/api/')) {
       if (route === '/api/register' && req.method === 'POST') {
         const body=await readBody(req);const name=string(body.name,80,'Name');if(!/^[\p{L}]+(?: +[\p{L}]+)*$/u.test(name))return json(res,400,{error:'Your name can contain letters and spaces only.'});const email=string(body.email,254,'Email').toLowerCase();
-        if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))return json(res,400,{error:'Enter a valid email address.'});
+        if(!isValidEmailAddress(email))return json(res,400,{error:'Enter a valid email address, such as name@example.com.'});
         if(typeof body.password!=='string'||body.password.length<10||body.password.length>200)return json(res,400,{error:'Password must be at least 10 characters.'});
         if(body.password!==body.confirm_password)return json(res,400,{error:'Passwords do not match.'});
         const gender=string(body.gender,40,'Gender');if(!['Female','Male','Non-binary','Prefer not to say'].includes(gender))return json(res,400,{error:'Choose a gender option.'});
