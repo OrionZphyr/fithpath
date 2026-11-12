@@ -37,7 +37,8 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS activities (
     id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     activity_type TEXT NOT NULL, activity_date TEXT NOT NULL, duration_min REAL NOT NULL,
-    distance_km REAL, steps INTEGER, intensity TEXT NOT NULL DEFAULT 'Moderate', notes TEXT NOT NULL DEFAULT '',
+    duration_unit TEXT NOT NULL DEFAULT 'minutes', distance_km REAL, distance_unit TEXT NOT NULL DEFAULT 'km',
+    steps INTEGER, intensity TEXT NOT NULL DEFAULT 'Moderate', notes TEXT NOT NULL DEFAULT '',
     calories INTEGER, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
   CREATE TABLE IF NOT EXISTS foods (
@@ -83,6 +84,8 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_sleep_user_date ON sleep_logs(user_id, sleep_date);
   CREATE INDEX IF NOT EXISTS idx_workouts_user_date ON workout_sessions(user_id, workout_date);
 `);
+const activityColumns = new Set(db.prepare('PRAGMA table_info(activities)').all().map(column => column.name));
+for (const [name,declaration] of [['duration_unit',"TEXT NOT NULL DEFAULT 'minutes'"],['distance_unit',"TEXT NOT NULL DEFAULT 'km'"]]) { if (!activityColumns.has(name)) db.exec(`ALTER TABLE activities ADD COLUMN ${name} ${declaration}`); }
 const priorWaterTable = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='water_logs'").get();
 const priorWaterGoal = db.prepare('PRAGMA table_info(users)').all().some(column => column.name === 'water_goal_ml');
 const priorWaterGoals = db.prepare("SELECT 1 FROM goals WHERE metric='water_ml' LIMIT 1").get();
@@ -165,6 +168,20 @@ function isValidEmailAddress(value) {
   const labelPattern=/^[\p{L}\p{N}](?:[\p{L}\p{N}-]{0,61}[\p{L}\p{N}])?$/u;
   return labels.length>=2&&labels.every(label=>label.length<=63&&labelPattern.test(label))&&labels.at(-1).length>=2&&/[\p{L}]/u.test(labels.at(-1));
 }
+function activityDuration(value, unit) {
+  const durationUnit=['minutes','hours'].includes(unit)?unit:'minutes';
+  const raw=number(value,durationUnit==='hours'?0.0167:1,durationUnit==='hours'?24:1440,'Duration');
+  const minutes=durationUnit==='hours'?raw*60:raw;
+  if(minutes<1||minutes>1440)throw new ValidationError('Duration must be between 1 minute and 24 hours.');
+  return {value:Number(minutes.toFixed(4)),unit:durationUnit};
+}
+function activityDistance(value, unit) {
+  const distanceUnit=['km','m','mi'].includes(unit)?unit:'km';
+  const limits={km:2000,m:2000000,mi:1242.742};
+  const raw=number(value,0,limits[distanceUnit],'Distance',true);
+  const km=raw===null?null:distanceUnit==='m'?raw/1000:distanceUnit==='mi'?raw*1.609344:raw;
+  return {value:km===null?null:Number(km.toFixed(6)),unit:distanceUnit};
+}
 function string(value, max, label, optional = false) { const s = String(value ?? '').trim(); if (!s && optional) return ''; if (!s || s.length > max) throw new ValidationError(`${label} is required and must be under ${max} characters.`); return s; }
 const today = () => new Date().toISOString().slice(0,10);
 function localTimestamp(date = today()) { return `${date}T${new Date().toISOString().slice(11,19)}Z`; }
@@ -176,7 +193,7 @@ function safeRecordDelete(table, userId, id) {
 }
 function listLogs(userId, fromDate, toDate) {
   const from = `${fromDate}T00:00:00.000Z`, to = `${toDate}T23:59:59.999Z`;
-  const activities = db.prepare('SELECT * FROM activities WHERE user_id=? AND activity_date BETWEEN ? AND ? ORDER BY activity_date DESC,id DESC').all(userId, fromDate, toDate);
+  const activities = db.prepare(`SELECT *,CASE duration_unit WHEN 'hours' THEN duration_min/60.0 ELSE duration_min END AS duration_value,CASE distance_unit WHEN 'm' THEN distance_km*1000.0 WHEN 'mi' THEN distance_km/1.609344 ELSE distance_km END AS distance_value FROM activities WHERE user_id=? AND activity_date BETWEEN ? AND ? ORDER BY activity_date DESC,id DESC`).all(userId, fromDate, toDate);
   const meals = db.prepare(`SELECT fl.id,fl.food_id,fl.meal,fl.servings,fl.logged_at,f.name,f.serving,f.calories,f.protein,f.carbs,f.fat FROM food_logs fl JOIN foods f ON f.id=fl.food_id WHERE fl.user_id=? AND fl.logged_at BETWEEN ? AND ? ORDER BY fl.logged_at DESC`).all(userId,from,to);
   const body = db.prepare('SELECT * FROM body_metrics WHERE user_id=? AND logged_at BETWEEN ? AND ? ORDER BY logged_at DESC').all(userId,from,to);
   const sleep = db.prepare('SELECT * FROM sleep_logs WHERE user_id=? AND sleep_date BETWEEN ? AND ? ORDER BY sleep_date DESC').all(userId,fromDate,toDate);
@@ -239,7 +256,7 @@ async function handle(req,res) {
         const nutrition=db.prepare(`SELECT coalesce(sum(fl.servings*f.calories),0) calories,coalesce(sum(fl.servings*f.protein),0) protein,coalesce(sum(fl.servings*f.carbs),0) carbs,coalesce(sum(fl.servings*f.fat),0) fat FROM food_logs fl JOIN foods f ON f.id=fl.food_id WHERE fl.user_id=? AND fl.logged_at BETWEEN ? AND ?`).get(user.id,`${date}T00:00:00.000Z`,`${date}T23:59:59.999Z`);
         const weight=db.prepare('SELECT weight_kg,logged_at FROM body_metrics WHERE user_id=? ORDER BY logged_at DESC LIMIT 1').get(user.id) || null;
         const week=db.prepare(`SELECT activity_date date,coalesce(sum(duration_min),0) minutes,coalesce(sum(calories),0) calories,coalesce(sum(steps),0) steps FROM activities WHERE user_id=? AND activity_date BETWEEN ? AND ? GROUP BY activity_date ORDER BY activity_date`).all(user.id,start,date);
-        const recent=db.prepare(`SELECT id,activity_type,activity_date,duration_min,distance_km,intensity FROM activities WHERE user_id=? ORDER BY activity_date DESC,id DESC LIMIT 5`).all(user.id);
+        const recent=db.prepare(`SELECT id,activity_type,activity_date,duration_min,duration_unit,CASE duration_unit WHEN 'hours' THEN duration_min/60.0 ELSE duration_min END AS duration_value,distance_km,distance_unit,CASE distance_unit WHEN 'm' THEN distance_km*1000.0 WHEN 'mi' THEN distance_km/1.609344 ELSE distance_km END AS distance_value,intensity,calories FROM activities WHERE user_id=? ORDER BY activity_date DESC,id DESC LIMIT 5`).all(user.id);
         const sessions=db.prepare('SELECT count(*) count FROM workout_sessions WHERE user_id=? AND workout_date BETWEEN ? AND ?').get(user.id,start,date).count;
         return json(res,200,{date,user,activity:act,nutrition,weight,week,recent,workout_sessions:sessions});
       }
@@ -249,9 +266,9 @@ async function handle(req,res) {
       }
       if (route === '/api/activities' && req.method === 'POST') {
         const b=await readBody(req); if (!validDate(b.date)) throw new ValidationError('Choose a valid activity date.');
-        const type=b.type==='Other'?`Other: ${string(b.other_activity,33,'Activity description')}`:string(b.type,40,'Activity'); const duration=number(b.duration,1,1440,'Duration'); const distance=number(b.distance,0,2000,'Distance',true); const steps=number(b.steps,0,200000,'Steps',true); const calories=number(b.calories,0,10000,'Calories',true);
+        const type=b.type==='Other'?`Other: ${string(b.other_activity,33,'Activity description')}`:string(b.type,40,'Activity'); const duration=activityDuration(b.duration,b.duration_unit); const distance=activityDistance(b.distance,b.distance_unit); const steps=number(b.steps,0,200000,'Steps',true); const calories=number(b.calories,0,10000,'Calories',true);
         const intensity=['Easy','Moderate','Hard'].includes(b.intensity)?b.intensity:'Moderate'; const notes=string(b.notes,500,'Notes',true);
-        db.prepare('INSERT INTO activities(user_id,activity_type,activity_date,duration_min,distance_km,steps,intensity,notes,calories) VALUES(?,?,?,?,?,?,?,?,?)').run(user.id,type,b.date,duration,distance,steps,intensity,notes,calories);
+        db.prepare('INSERT INTO activities(user_id,activity_type,activity_date,duration_min,duration_unit,distance_km,distance_unit,steps,intensity,notes,calories) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(user.id,type,b.date,duration.value,duration.unit,distance.value,distance.unit,steps,intensity,notes,calories);
         return json(res,201,{ok:true});
       }
       if (route === '/api/food-logs' && req.method === 'POST') {
@@ -286,8 +303,8 @@ async function handle(req,res) {
         const table={activity:'activities',food:'food_logs',body:'body_metrics',sleep:'sleep_logs',goal:'goals',workout:'workout_sessions'}[kind];
         if(!db.prepare(`SELECT id FROM ${table} WHERE id=? AND user_id=?`).get(id,user.id))return json(res,404,{error:'Record not found.'});
         if(kind==='activity'){
-          if(!validDate(b.date))throw new ValidationError('Choose a valid activity date.');const type=b.type==='Other'?`Other: ${string(b.other_activity,33,'Activity description')}`:string(b.type,40,'Activity'),duration=number(b.duration,1,1440,'Duration'),distance=number(b.distance,0,2000,'Distance',true),steps=number(b.steps,0,200000,'Steps',true),calories=number(b.calories,0,10000,'Calories',true),intensity=['Easy','Moderate','Hard'].includes(b.intensity)?b.intensity:'Moderate',notes=string(b.notes,500,'Notes',true);
-          db.prepare('UPDATE activities SET activity_type=?,activity_date=?,duration_min=?,distance_km=?,steps=?,intensity=?,notes=?,calories=? WHERE id=? AND user_id=?').run(type,b.date,duration,distance,steps,intensity,notes,calories,id,user.id);
+          if(!validDate(b.date))throw new ValidationError('Choose a valid activity date.');const type=b.type==='Other'?`Other: ${string(b.other_activity,33,'Activity description')}`:string(b.type,40,'Activity'),duration=activityDuration(b.duration,b.duration_unit),distance=activityDistance(b.distance,b.distance_unit),steps=number(b.steps,0,200000,'Steps',true),calories=number(b.calories,0,10000,'Calories',true),intensity=['Easy','Moderate','Hard'].includes(b.intensity)?b.intensity:'Moderate',notes=string(b.notes,500,'Notes',true);
+          db.prepare('UPDATE activities SET activity_type=?,activity_date=?,duration_min=?,duration_unit=?,distance_km=?,distance_unit=?,steps=?,intensity=?,notes=?,calories=? WHERE id=? AND user_id=?').run(type,b.date,duration.value,duration.unit,distance.value,distance.unit,steps,intensity,notes,calories,id,user.id);
         }else if(kind==='food'){
           const foodId=number(b.food_id,1,1000000,'Food'),servings=number(b.servings,0.05,50,'Servings'),meal=['Breakfast','Lunch','Dinner','Snack'].includes(b.meal)?b.meal:'Snack',date=validDate(b.date)?b.date:today();if(!db.prepare('SELECT id FROM foods WHERE id=?').get(foodId))throw new ValidationError('Choose a food from the list.');
           db.prepare('UPDATE food_logs SET food_id=?,meal=?,servings=?,logged_at=? WHERE id=? AND user_id=?').run(foodId,meal,servings,localTimestamp(date),id,user.id);
