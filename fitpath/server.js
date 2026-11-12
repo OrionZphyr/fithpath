@@ -17,7 +17,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE,
     salt TEXT NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'user',
-    steps_goal INTEGER NOT NULL DEFAULT 8000, water_goal_ml INTEGER NOT NULL DEFAULT 2000,
+    steps_goal INTEGER NOT NULL DEFAULT 8000,
     calories_goal INTEGER NOT NULL DEFAULT 2000, gender TEXT, height_cm REAL, weight_kg REAL, bmi REAL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
@@ -49,10 +49,6 @@ db.exec(`
     food_id INTEGER NOT NULL REFERENCES foods(id), meal TEXT NOT NULL, servings REAL NOT NULL,
     logged_at TEXT NOT NULL
   );
-  CREATE TABLE IF NOT EXISTS water_logs (
-    id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    amount_ml INTEGER NOT NULL, logged_at TEXT NOT NULL
-  );
   CREATE TABLE IF NOT EXISTS body_metrics (
     id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     weight_kg REAL NOT NULL, waist_cm REAL, hip_cm REAL, logged_at TEXT NOT NULL
@@ -83,11 +79,18 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_activities_user_date ON activities(user_id, activity_date);
   CREATE INDEX IF NOT EXISTS idx_food_logs_user_date ON food_logs(user_id, logged_at);
-  CREATE INDEX IF NOT EXISTS idx_water_user_date ON water_logs(user_id, logged_at);
   CREATE INDEX IF NOT EXISTS idx_body_user_date ON body_metrics(user_id, logged_at);
   CREATE INDEX IF NOT EXISTS idx_sleep_user_date ON sleep_logs(user_id, sleep_date);
   CREATE INDEX IF NOT EXISTS idx_workouts_user_date ON workout_sessions(user_id, workout_date);
 `);
+const priorWaterTable = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='water_logs'").get();
+const priorWaterGoal = db.prepare('PRAGMA table_info(users)').all().some(column => column.name === 'water_goal_ml');
+const priorWaterGoals = db.prepare("SELECT 1 FROM goals WHERE metric='water_ml' LIMIT 1").get();
+if (priorWaterTable || priorWaterGoal || priorWaterGoals) {
+  db.exec("PRAGMA secure_delete=ON; DELETE FROM goals WHERE metric='water_ml'; DROP TABLE IF EXISTS water_logs;");
+  if (priorWaterGoal) db.exec('ALTER TABLE users DROP COLUMN water_goal_ml');
+  db.exec('VACUUM; PRAGMA wal_checkpoint(TRUNCATE);');
+}
 const userColumns = new Set(db.prepare('PRAGMA table_info(users)').all().map(column => column.name));
 for (const [name, declaration] of [['gender','TEXT'],['height_cm','REAL'],['weight_kg','REAL'],['bmi','REAL'],['last_active_at','TEXT']]) {
   if (!userColumns.has(name)) db.exec(`ALTER TABLE users ADD COLUMN ${name} ${declaration}`);
@@ -140,7 +143,7 @@ function cookieToken(req) { const match = (req.headers.cookie || '').match(/(?:^
 function currentUser(req) {
   const token = cookieToken(req); if (!token) return null;
   const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
-  const row = db.prepare('SELECT users.id, users.name, users.email, users.role, users.steps_goal, users.water_goal_ml, users.calories_goal, users.gender, users.height_cm, users.weight_kg, users.bmi FROM sessions JOIN users ON users.id=sessions.user_id WHERE sessions.token_hash=? AND sessions.expires_at>?').get(tokenHash, Date.now());
+  const row = db.prepare('SELECT users.id, users.name, users.email, users.role, users.steps_goal, users.calories_goal, users.gender, users.height_cm, users.weight_kg, users.bmi FROM sessions JOIN users ON users.id=sessions.user_id WHERE sessions.token_hash=? AND sessions.expires_at>?').get(tokenHash, Date.now());
   if (row) db.prepare('UPDATE users SET last_active_at=? WHERE id=?').run(new Date().toISOString(), row.id);
   return row || null;
 }
@@ -154,7 +157,7 @@ function string(value, max, label, optional = false) { const s = String(value ??
 const today = () => new Date().toISOString().slice(0,10);
 function localTimestamp(date = today()) { return `${date}T${new Date().toISOString().slice(11,19)}Z`; }
 function safeRecordDelete(table, userId, id) {
-  const allowed = { activities:'activities', food:'food_logs', water:'water_logs', body:'body_metrics', sleep:'sleep_logs', goal:'goals' };
+  const allowed = { activities:'activities', food:'food_logs', body:'body_metrics', sleep:'sleep_logs', goal:'goals' };
   const target = allowed[table]; if (!target) return false;
   const field = table === 'sleep' ? 'sleep_date' : 'logged_at';
   return db.prepare(`DELETE FROM ${target} WHERE id=? AND user_id=?`).run(Number(id), userId).changes > 0;
@@ -163,12 +166,11 @@ function listLogs(userId, fromDate, toDate) {
   const from = `${fromDate}T00:00:00.000Z`, to = `${toDate}T23:59:59.999Z`;
   const activities = db.prepare('SELECT * FROM activities WHERE user_id=? AND activity_date BETWEEN ? AND ? ORDER BY activity_date DESC,id DESC').all(userId, fromDate, toDate);
   const meals = db.prepare(`SELECT fl.id,fl.food_id,fl.meal,fl.servings,fl.logged_at,f.name,f.serving,f.calories,f.protein,f.carbs,f.fat FROM food_logs fl JOIN foods f ON f.id=fl.food_id WHERE fl.user_id=? AND fl.logged_at BETWEEN ? AND ? ORDER BY fl.logged_at DESC`).all(userId,from,to);
-  const water = db.prepare('SELECT * FROM water_logs WHERE user_id=? AND logged_at BETWEEN ? AND ? ORDER BY logged_at DESC').all(userId,from,to);
   const body = db.prepare('SELECT * FROM body_metrics WHERE user_id=? AND logged_at BETWEEN ? AND ? ORDER BY logged_at DESC').all(userId,from,to);
   const sleep = db.prepare('SELECT * FROM sleep_logs WHERE user_id=? AND sleep_date BETWEEN ? AND ? ORDER BY sleep_date DESC').all(userId,fromDate,toDate);
   const workouts = db.prepare(`SELECT ws.*, count(wset.id) AS set_count FROM workout_sessions ws LEFT JOIN workout_sets wset ON wset.session_id=ws.id WHERE ws.user_id=? AND ws.workout_date BETWEEN ? AND ? GROUP BY ws.id ORDER BY ws.workout_date DESC,ws.id DESC`).all(userId,fromDate,toDate);
   const goals = db.prepare('SELECT * FROM goals WHERE user_id=? ORDER BY id DESC').all(userId);
-  return { activities, meals, water, body, sleep, workouts, goals };
+  return { activities, meals, body, sleep, workouts, goals };
 }
 async function handle(req,res) {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
@@ -186,7 +188,7 @@ async function handle(req,res) {
         const height=number(body.height_cm,100,250,'Height',true),weight=number(body.weight_kg,20,500,'Weight',true);if((height===null)!==(weight===null))return json(res,400,{error:'Enter both height and weight to calculate BMI, or leave both blank.'});const bmi=height===null?null:Number((weight/((height/100)**2)).toFixed(1));
         const salt=crypto.randomBytes(16).toString('hex');let userId;
         try{const result=db.prepare('INSERT INTO users(name,email,salt,password_hash,gender,height_cm,weight_kg,bmi) VALUES(?,?,?,?,?,?,?,?)').run(name,email,salt,hashPassword(body.password,salt),gender,height,weight,bmi);userId=Number(result.lastInsertRowid);}catch(error){if(String(error.message).includes('UNIQUE'))return json(res,409,{error:'An account with that email already exists.'});throw error;}
-        const user=db.prepare('SELECT id,name,email,role,steps_goal,water_goal_ml,calories_goal,gender,height_cm,weight_kg,bmi FROM users WHERE id=?').get(userId);
+        const user=db.prepare('SELECT id,name,email,role,steps_goal,calories_goal,gender,height_cm,weight_kg,bmi FROM users WHERE id=?').get(userId);
         return json(res,201,{user});
       }
       if (route === '/api/login' && req.method === 'POST') {
@@ -195,7 +197,7 @@ async function handle(req,res) {
         const token = crypto.randomBytes(32).toString('base64url'); const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
         db.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)').run(tokenHash,row.id,Date.now()+30*86400000);
         db.prepare('UPDATE users SET last_active_at=? WHERE id=?').run(new Date().toISOString(),row.id);
-        const user = db.prepare('SELECT id,name,email,role,steps_goal,water_goal_ml,calories_goal,gender,height_cm,weight_kg,bmi FROM users WHERE id=?').get(row.id);
+        const user = db.prepare('SELECT id,name,email,role,steps_goal,calories_goal,gender,height_cm,weight_kg,bmi FROM users WHERE id=?').get(row.id);
         return json(res,200,{user},{'Set-Cookie':`fitpath_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000${SECURE_COOKIE}`});
       }
       if (route === '/api/logout' && req.method === 'POST') {
@@ -205,9 +207,9 @@ async function handle(req,res) {
       if (route === '/api/me' && req.method === 'GET') return json(res,200,{user:currentUser(req)});
       const user = requireAuth(req,res); if (!user) return;
       if (route === '/api/profile' && req.method === 'PATCH') {
-        const b=await readBody(req); const name=string(b.name,80,'Name'); const steps_goal=number(b.steps_goal,500,100000,'Step goal'); const water_goal_ml=number(b.water_goal_ml,250,10000,'Water goal'); const calories_goal=number(b.calories_goal,500,10000,'Calorie goal');
-        db.prepare('UPDATE users SET name=?,steps_goal=?,water_goal_ml=?,calories_goal=? WHERE id=?').run(name,steps_goal,water_goal_ml,calories_goal,user.id);
-        return json(res,200,{user:db.prepare('SELECT id,name,email,role,steps_goal,water_goal_ml,calories_goal,gender,height_cm,weight_kg,bmi FROM users WHERE id=?').get(user.id)});
+        const b=await readBody(req); const name=string(b.name,80,'Name'); const steps_goal=number(b.steps_goal,500,100000,'Step goal'); const calories_goal=number(b.calories_goal,500,10000,'Calorie goal');
+        db.prepare('UPDATE users SET name=?,steps_goal=?,calories_goal=? WHERE id=?').run(name,steps_goal,calories_goal,user.id);
+        return json(res,200,{user:db.prepare('SELECT id,name,email,role,steps_goal,calories_goal,gender,height_cm,weight_kg,bmi FROM users WHERE id=?').get(user.id)});
       }
       if (route === '/api/account' && req.method === 'DELETE') {
         const b=await readBody(req); const row=db.prepare('SELECT salt,password_hash FROM users WHERE id=?').get(user.id);
@@ -219,13 +221,12 @@ async function handle(req,res) {
         const date=validDate(url.searchParams.get('date'))?url.searchParams.get('date'):today();
         const from = new Date(`${date}T00:00:00Z`); from.setUTCDate(from.getUTCDate()-6); const start=from.toISOString().slice(0,10);
         const act=db.prepare('SELECT count(*) count,coalesce(sum(duration_min),0) minutes,coalesce(sum(distance_km),0) distance,coalesce(sum(steps),0) steps,coalesce(sum(calories),0) calories FROM activities WHERE user_id=? AND activity_date=?').get(user.id,date);
-        const water=db.prepare('SELECT coalesce(sum(amount_ml),0) total FROM water_logs WHERE user_id=? AND logged_at BETWEEN ? AND ?').get(user.id,`${date}T00:00:00.000Z`,`${date}T23:59:59.999Z`).total;
         const nutrition=db.prepare(`SELECT coalesce(sum(fl.servings*f.calories),0) calories,coalesce(sum(fl.servings*f.protein),0) protein,coalesce(sum(fl.servings*f.carbs),0) carbs,coalesce(sum(fl.servings*f.fat),0) fat FROM food_logs fl JOIN foods f ON f.id=fl.food_id WHERE fl.user_id=? AND fl.logged_at BETWEEN ? AND ?`).get(user.id,`${date}T00:00:00.000Z`,`${date}T23:59:59.999Z`);
         const weight=db.prepare('SELECT weight_kg,logged_at FROM body_metrics WHERE user_id=? ORDER BY logged_at DESC LIMIT 1').get(user.id) || null;
         const week=db.prepare(`SELECT activity_date date,coalesce(sum(duration_min),0) minutes,coalesce(sum(calories),0) calories,coalesce(sum(steps),0) steps FROM activities WHERE user_id=? AND activity_date BETWEEN ? AND ? GROUP BY activity_date ORDER BY activity_date`).all(user.id,start,date);
         const recent=db.prepare(`SELECT id,activity_type,activity_date,duration_min,distance_km,intensity FROM activities WHERE user_id=? ORDER BY activity_date DESC,id DESC LIMIT 5`).all(user.id);
         const sessions=db.prepare('SELECT count(*) count FROM workout_sessions WHERE user_id=? AND workout_date BETWEEN ? AND ?').get(user.id,start,date).count;
-        return json(res,200,{date,user,activity:act,water_ml:water,nutrition,weight,week,recent,workout_sessions:sessions});
+        return json(res,200,{date,user,activity:act,nutrition,weight,week,recent,workout_sessions:sessions});
       }
       if (route === '/api/logs' && req.method === 'GET') {
         const date=validDate(url.searchParams.get('date'))?url.searchParams.get('date'):today(); const d=new Date(`${date}T00:00:00Z`); d.setUTCDate(d.getUTCDate()-30);
@@ -243,10 +244,6 @@ async function handle(req,res) {
         const food=db.prepare('SELECT id FROM foods WHERE id=?').get(foodId); if (!food) throw new ValidationError('Choose a food from the list.');
         db.prepare('INSERT INTO food_logs(user_id,food_id,meal,servings,logged_at) VALUES(?,?,?,?,?)').run(user.id,foodId,meal,servings,localTimestamp(date)); return json(res,201,{ok:true});
       }
-      if (route === '/api/water-logs' && req.method === 'POST') {
-        const b=await readBody(req); const amount=number(b.amount_ml,25,5000,'Water amount'); const date=validDate(b.date)?b.date:today();
-        db.prepare('INSERT INTO water_logs(user_id,amount_ml,logged_at) VALUES(?,?,?)').run(user.id,amount,localTimestamp(date)); return json(res,201,{ok:true});
-      }
       if (route === '/api/body-metrics' && req.method === 'POST') {
         const b=await readBody(req); const weight=number(b.weight_kg,20,500,'Weight'); const waist=number(b.waist_cm,20,300,'Waist',true); const hip=number(b.hip_cm,20,300,'Hip',true); const date=validDate(b.date)?b.date:today();
         db.prepare('INSERT INTO body_metrics(user_id,weight_kg,waist_cm,hip_cm,logged_at) VALUES(?,?,?,?,?)').run(user.id,weight,waist,hip,localTimestamp(date)); return json(res,201,{ok:true});
@@ -258,7 +255,7 @@ async function handle(req,res) {
         db.prepare('INSERT INTO sleep_logs(user_id,sleep_date,bedtime,waketime,quality,energy,notes) VALUES(?,?,?,?,?,?,?)').run(user.id,b.date,bedtime,waketime,quality,energy,notes); return json(res,201,{ok:true});
       }
       if (route === '/api/goals' && req.method === 'POST') {
-        const b=await readBody(req); const title=string(b.title,100,'Goal'); const metric=['activity_minutes','water_ml','weight_kg','workout_sessions'].includes(b.metric)?b.metric:'activity_minutes'; const target=number(b.target,1,100000,'Target'); const unit=string(b.unit||'min',20,'Unit'); const deadline=b.deadline&&validDate(b.deadline)?b.deadline:null;
+        const b=await readBody(req); const title=string(b.title,100,'Goal'); const metric=['activity_minutes','weight_kg','workout_sessions'].includes(b.metric)?b.metric:'activity_minutes'; const target=number(b.target,1,100000,'Target'); const unit=string(b.unit||'min',20,'Unit'); const deadline=b.deadline&&validDate(b.deadline)?b.deadline:null;
         db.prepare('INSERT INTO goals(user_id,title,metric,target,unit,deadline) VALUES(?,?,?,?,?,?)').run(user.id,title,metric,target,unit,deadline); return json(res,201,{ok:true});
       }
       if (route === '/api/workouts' && req.method === 'POST') {
@@ -268,10 +265,10 @@ async function handle(req,res) {
         const addSet=db.prepare('INSERT INTO workout_sets(session_id,exercise_id,set_no,reps,weight_kg,duration_sec,notes) VALUES(?,?,?,?,?,?,?)');
         db.exec('BEGIN IMMEDIATE'); try { const result=add.run(user.id,title,date,duration,notes); sets.forEach((s,i)=>{const eid=number(s.exercise_id,1,1000000,'Exercise');if(!db.prepare('SELECT id FROM exercises WHERE id=?').get(eid))throw new ValidationError('Choose a listed exercise.');addSet.run(result.lastInsertRowid,eid,i+1,number(s.reps,0,10000,'Reps',true),number(s.weight_kg,0,2000,'Weight',true),number(s.duration_sec,0,86400,'Set duration',true),string(s.notes,250,'Set notes',true));});db.exec('COMMIT');} catch(e){db.exec('ROLLBACK');throw e;} return json(res,201,{ok:true});
       }
-      const editMatch=route.match(/^\/api\/edit\/(activity|food|water|body|sleep|goal|workout)\/(\d+)$/);
+      const editMatch=route.match(/^\/api\/edit\/(activity|food|body|sleep|goal|workout)\/(\d+)$/);
       if(editMatch&&req.method==='PATCH'){
         const [,kind,idText]=editMatch,id=Number(idText),b=await readBody(req);
-        const table={activity:'activities',food:'food_logs',water:'water_logs',body:'body_metrics',sleep:'sleep_logs',goal:'goals',workout:'workout_sessions'}[kind];
+        const table={activity:'activities',food:'food_logs',body:'body_metrics',sleep:'sleep_logs',goal:'goals',workout:'workout_sessions'}[kind];
         if(!db.prepare(`SELECT id FROM ${table} WHERE id=? AND user_id=?`).get(id,user.id))return json(res,404,{error:'Record not found.'});
         if(kind==='activity'){
           if(!validDate(b.date))throw new ValidationError('Choose a valid activity date.');const type=string(b.type,40,'Activity'),duration=number(b.duration,1,1440,'Duration'),distance=number(b.distance,0,2000,'Distance',true),steps=number(b.steps,0,200000,'Steps',true),calories=number(b.calories,0,10000,'Calories',true),intensity=['Easy','Moderate','Hard'].includes(b.intensity)?b.intensity:'Moderate',notes=string(b.notes,500,'Notes',true);
@@ -279,27 +276,25 @@ async function handle(req,res) {
         }else if(kind==='food'){
           const foodId=number(b.food_id,1,1000000,'Food'),servings=number(b.servings,0.05,50,'Servings'),meal=['Breakfast','Lunch','Dinner','Snack'].includes(b.meal)?b.meal:'Snack',date=validDate(b.date)?b.date:today();if(!db.prepare('SELECT id FROM foods WHERE id=?').get(foodId))throw new ValidationError('Choose a food from the list.');
           db.prepare('UPDATE food_logs SET food_id=?,meal=?,servings=?,logged_at=? WHERE id=? AND user_id=?').run(foodId,meal,servings,localTimestamp(date),id,user.id);
-        }else if(kind==='water'){
-          const amount=number(b.amount_ml,25,5000,'Water amount'),date=validDate(b.date)?b.date:today();db.prepare('UPDATE water_logs SET amount_ml=?,logged_at=? WHERE id=? AND user_id=?').run(amount,localTimestamp(date),id,user.id);
         }else if(kind==='body'){
           const weight=number(b.weight_kg,20,500,'Weight'),waist=number(b.waist_cm,20,300,'Waist',true),hip=number(b.hip_cm,20,300,'Hip',true),date=validDate(b.date)?b.date:today();db.prepare('UPDATE body_metrics SET weight_kg=?,waist_cm=?,hip_cm=?,logged_at=? WHERE id=? AND user_id=?').run(weight,waist,hip,localTimestamp(date),id,user.id);
         }else if(kind==='sleep'){
           if(!validDate(b.date))throw new ValidationError('Choose a valid sleep date.');const bedtime=string(b.bedtime,5,'Bedtime'),waketime=string(b.waketime,5,'Wake time');if(!/^\d{2}:\d{2}$/.test(bedtime)||!/^[0-2]\d:[0-5]\d$/.test(waketime)||!/^[0-2]\d:[0-5]\d$/.test(bedtime))throw new ValidationError('Enter valid bed and wake times.');const quality=number(b.quality,1,5,'Sleep quality'),energy=number(b.energy,1,5,'Energy'),notes=string(b.notes,500,'Notes',true);db.prepare('UPDATE sleep_logs SET sleep_date=?,bedtime=?,waketime=?,quality=?,energy=?,notes=? WHERE id=? AND user_id=?').run(b.date,bedtime,waketime,quality,energy,notes,id,user.id);
         }else if(kind==='goal'){
-          const title=string(b.title,100,'Goal'),metric=['activity_minutes','water_ml','weight_kg','workout_sessions'].includes(b.metric)?b.metric:'activity_minutes',target=number(b.target,1,100000,'Target'),unit=string(b.unit||'min',20,'Unit'),deadline=b.deadline&&validDate(b.deadline)?b.deadline:null;db.prepare('UPDATE goals SET title=?,metric=?,target=?,unit=?,deadline=? WHERE id=? AND user_id=?').run(title,metric,target,unit,deadline,id,user.id);
+          const title=string(b.title,100,'Goal'),metric=['activity_minutes','weight_kg','workout_sessions'].includes(b.metric)?b.metric:'activity_minutes',target=number(b.target,1,100000,'Target'),unit=string(b.unit||'min',20,'Unit'),deadline=b.deadline&&validDate(b.deadline)?b.deadline:null;db.prepare('UPDATE goals SET title=?,metric=?,target=?,unit=?,deadline=? WHERE id=? AND user_id=?').run(title,metric,target,unit,deadline,id,user.id);
         }else{
           const title=string(b.title,100,'Workout'),date=validDate(b.date)?b.date:today(),duration=number(b.duration,0,1440,'Duration'),notes=string(b.notes,500,'Notes',true);db.prepare('UPDATE workout_sessions SET title=?,workout_date=?,duration_min=?,notes=? WHERE id=? AND user_id=?').run(title,date,duration,notes,id,user.id);
         }
         return json(res,200,{ok:true});
       }
-      const delMatch=route.match(/^\/api\/delete\/(activity|food|water|body|sleep|goal)\/(\d+)$/);
+      const delMatch=route.match(/^\/api\/delete\/(activity|food|body|sleep|goal)\/(\d+)$/);
       if (delMatch && req.method === 'DELETE') return safeRecordDelete(delMatch[1],user.id,delMatch[2])?json(res,200,{ok:true}):json(res,404,{error:'Record not found.'});
       const workoutDelete=route.match(/^\/api\/workouts\/(\d+)$/);
       if (workoutDelete && req.method==='DELETE') { const result=db.prepare('DELETE FROM workout_sessions WHERE id=? AND user_id=?').run(Number(workoutDelete[1]),user.id);return result.changes?json(res,200,{ok:true}):json(res,404,{error:'Workout not found.'}); }
       if (route === '/api/admin/users' && req.method==='GET') {
         if (user.role!=='admin') return json(res,403,{error:'Administrator access required.'});
         const users = db.prepare(
-          'SELECT u.id,u.name,u.email,u.role,u.created_at,u.last_active_at,u.gender,u.height_cm,u.weight_kg,u.bmi,u.steps_goal,u.water_goal_ml,u.calories_goal,' +
+          'SELECT u.id,u.name,u.email,u.role,u.created_at,u.last_active_at,u.gender,u.height_cm,u.weight_kg,u.bmi,u.steps_goal,u.calories_goal,' +
           '(SELECT count(*) FROM activities a WHERE a.user_id=u.id) AS activity_count,' +
           '(SELECT count(*) FROM workout_sessions w WHERE w.user_id=u.id) AS workout_count ' +
           'FROM users u ORDER BY u.id DESC'

@@ -1,6 +1,6 @@
 ﻿# Fitpath
 
-Fitpath is a responsive fitness tracker built with browser JavaScript, Node.js, and SQLite. It supports activity, workout, nutrition, hydration, body, sleep, and goal logs. User accounts use password hashing.
+Fitpath is a responsive fitness tracker built with browser JavaScript, Node.js, and SQLite. It supports activity, workout, nutrition, body, sleep, and goal logs. User accounts use password hashing.
 
 ## Run on a Windows 10 school computer
 

@@ -57,15 +57,14 @@ test('user data is isolated and logged totals are calculated from records',async
   assert.equal((await alice.request('/api/activities','POST',{type:'Walking',date:'2026-10-23',duration:35,distance:2.4,steps:4200,intensity:'Moderate',calories:150})).status,201);
   const food=catalog.data.foods.find(x=>x.name==='Banana');
   assert.equal((await alice.request('/api/food-logs','POST',{food_id:food.id,meal:'Snack',servings:2,date:'2026-10-23'})).status,201);
-  assert.equal((await alice.request('/api/water-logs','POST',{amount_ml:500,date:'2026-10-23'})).status,201);
   assert.equal((await alice.request('/api/body-metrics','POST',{weight_kg:63.2,date:'2026-10-23'})).status,201);
   const summary=await alice.request('/api/summary?date=2026-10-23');
-  assert.equal(summary.data.activity.minutes,35);assert.equal(summary.data.activity.steps,4200);assert.equal(summary.data.water_ml,500);assert.equal(summary.data.nutrition.calories,210);
+  assert.equal(summary.data.activity.minutes,35);assert.equal(summary.data.activity.steps,4200);assert.equal(summary.data.nutrition.calories,210);
   const records=await alice.request('/api/logs?date=2026-10-23');const activityId=records.data.activities[0].id;
   assert.equal((await bob.request(`/api/edit/activity/${activityId}`,'PATCH',{type:'Running',date:'2026-10-23',duration:99})).status,404);
   assert.equal((await alice.request(`/api/edit/activity/${activityId}`,'PATCH',{type:'Walking',date:'2026-10-23',duration:45,distance:3,steps:5000,intensity:'Hard',calories:180,notes:'Updated'})).status,200);
   assert.equal((await alice.request('/api/summary?date=2026-10-23')).data.activity.steps,5000);
-  const bobLogs=await bob.request('/api/logs?date=2026-10-23');assert.equal(bobLogs.data.activities.length,0);assert.equal(bobLogs.data.meals.length,0);assert.equal(bobLogs.data.water.length,0);assert.equal(bobLogs.data.body.length,0);
+  const bobLogs=await bob.request('/api/logs?date=2026-10-23');assert.equal(bobLogs.data.activities.length,0);assert.equal(bobLogs.data.meals.length,0);assert.equal(bobLogs.data.body.length,0);
 });
 
 test('workout sets persist, invalid input is rejected, and owner-scoped deletion works',async()=>{
