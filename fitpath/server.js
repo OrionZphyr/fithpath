@@ -95,7 +95,7 @@ if (priorWaterTable || priorWaterGoal || priorWaterGoals) {
   db.exec('VACUUM; PRAGMA wal_checkpoint(TRUNCATE);');
 }
 const userColumns = new Set(db.prepare('PRAGMA table_info(users)').all().map(column => column.name));
-for (const [name, declaration] of [['gender','TEXT'],['height_cm','REAL'],['weight_kg','REAL'],['bmi','REAL'],['birth_date','TEXT'],['last_active_at','TEXT']]) {
+for (const [name, declaration] of [['gender','TEXT'],['height_cm','REAL'],['weight_kg','REAL'],['bmi','REAL'],['birth_date','TEXT'],['last_active_at','TEXT'],['theme',"TEXT NOT NULL DEFAULT 'light'"]]) {
   if (!userColumns.has(name)) db.exec(`ALTER TABLE users ADD COLUMN ${name} ${declaration}`);
 }
 if (!db.prepare('PRAGMA table_info(activities)').all().some(column => column.name === 'steps')) db.exec('ALTER TABLE activities ADD COLUMN steps INTEGER');
@@ -263,7 +263,7 @@ function cookieToken(req) { const match = (req.headers.cookie || '').match(/(?:^
 function currentUser(req) {
   const token = cookieToken(req); if (!token) return null;
   const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
-  const row = db.prepare('SELECT users.id, users.name, users.email, users.role, users.steps_goal, users.calories_goal, users.gender, users.height_cm, users.weight_kg, users.bmi, users.birth_date, users.created_at FROM sessions JOIN users ON users.id=sessions.user_id WHERE sessions.token_hash=? AND sessions.expires_at>?').get(tokenHash, Date.now());
+  const row = db.prepare('SELECT users.id, users.name, users.email, users.role, users.steps_goal, users.calories_goal, users.gender, users.height_cm, users.weight_kg, users.bmi, users.birth_date, users.created_at, users.theme FROM sessions JOIN users ON users.id=sessions.user_id WHERE sessions.token_hash=? AND sessions.expires_at>?').get(tokenHash, Date.now());
   if (row) db.prepare('UPDATE users SET last_active_at=? WHERE id=?').run(new Date().toISOString(), row.id);
   return row || null;
 }
@@ -343,7 +343,7 @@ async function handle(req,res) {
         const heightText=String(body.height_cm??''),weightText=String(body.weight_kg??'');if(!/^\d+(?:\.\d+)?$/.test(heightText)||!/^\d+(?:\.\d+)?$/.test(weightText))return json(res,400,{error:'Enter height and weight using numbers only.'});const height=number(heightText,100,250,'Height'),weight=number(weightText,20,500,'Weight');const bmi=Number((weight/((height/100)**2)).toFixed(1));
         const salt=crypto.randomBytes(16).toString('hex');let userId;
         try{const result=db.prepare('INSERT INTO users(name,email,salt,password_hash,gender,height_cm,weight_kg,bmi,birth_date) VALUES(?,?,?,?,?,?,?,?,?)').run(name,email,salt,hashPassword(body.password,salt),gender,height,weight,bmi,birthDate);userId=Number(result.lastInsertRowid);}catch(error){if(String(error.message).includes('UNIQUE'))return json(res,409,{error:'An account with that email already exists.'});throw error;}
-        const user=db.prepare('SELECT id,name,email,role,steps_goal,calories_goal,gender,height_cm,weight_kg,bmi,birth_date,created_at FROM users WHERE id=?').get(userId);
+        const user=db.prepare('SELECT id,name,email,role,steps_goal,calories_goal,gender,height_cm,weight_kg,bmi,birth_date,created_at,theme FROM users WHERE id=?').get(userId);
         return json(res,201,{user});
       }
       if (route === '/api/login' && req.method === 'POST') {
@@ -352,7 +352,7 @@ async function handle(req,res) {
         const token = crypto.randomBytes(32).toString('base64url'); const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
         db.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)').run(tokenHash,row.id,Date.now()+30*86400000);
         db.prepare('UPDATE users SET last_active_at=? WHERE id=?').run(new Date().toISOString(),row.id);
-        const user = db.prepare('SELECT id,name,email,role,steps_goal,calories_goal,gender,height_cm,weight_kg,bmi,birth_date,created_at FROM users WHERE id=?').get(row.id);
+        const user = db.prepare('SELECT id,name,email,role,steps_goal,calories_goal,gender,height_cm,weight_kg,bmi,birth_date,created_at,theme FROM users WHERE id=?').get(row.id);
         return json(res,200,{user},{'Set-Cookie':`fitpath_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000${SECURE_COOKIE}`});
       }
       if (route === '/api/logout' && req.method === 'POST') {
@@ -367,12 +367,18 @@ async function handle(req,res) {
         const birthDate=String(b.birth_date??'');if(!validDate(birthDate))throw new ValidationError('Enter a valid date of birth.');if(!isAtLeast18(birthDate))throw new ValidationError('Your date of birth must show that you are at least 18.');
         const height=number(b.height_cm,100,250,'Height'),weight=number(b.weight_kg,20,500,'Weight'),bmi=Number((weight/((height/100)**2)).toFixed(1));
         db.prepare('UPDATE users SET name=?,gender=?,birth_date=?,height_cm=?,weight_kg=?,bmi=? WHERE id=?').run(name,gender,birthDate,height,weight,bmi,user.id);
-        const updated=db.prepare('SELECT id,name,email,role,steps_goal,calories_goal,gender,height_cm,weight_kg,bmi,birth_date,created_at FROM users WHERE id=?').get(user.id);
+        const updated=db.prepare('SELECT id,name,email,role,steps_goal,calories_goal,gender,height_cm,weight_kg,bmi,birth_date,created_at,theme FROM users WHERE id=?').get(user.id);
         return json(res,200,{user:updated});
-      }      if (route === '/api/profile' && req.method === 'PATCH') {
-        const b=await readBody(req); const name=string(b.name,80,'Name'); const steps_goal=number(b.steps_goal,500,100000,'Step goal'); const calories_goal=number(b.calories_goal,500,10000,'Calorie goal');
-        db.prepare('UPDATE users SET name=?,steps_goal=?,calories_goal=? WHERE id=?').run(name,steps_goal,calories_goal,user.id);
-        return json(res,200,{user:db.prepare('SELECT id,name,email,role,steps_goal,calories_goal,gender,height_cm,weight_kg,bmi,birth_date,created_at FROM users WHERE id=?').get(user.id)});
+      }
+      if (route === '/api/settings' && req.method === 'PATCH') {
+        const b=await readBody(req);const theme=String(b.theme??'');if(!['light','dark'].includes(theme))throw new ValidationError('Choose light or dark mode.');
+        db.prepare('UPDATE users SET theme=? WHERE id=?').run(theme,user.id);
+        return json(res,200,{user:db.prepare('SELECT id,name,email,role,steps_goal,calories_goal,gender,height_cm,weight_kg,bmi,birth_date,created_at,theme FROM users WHERE id=?').get(user.id)});
+      }
+      if (route === '/api/profile' && req.method === 'PATCH') {
+        const b=await readBody(req); const steps_goal=number(b.steps_goal,500,100000,'Step goal'); const calories_goal=number(b.calories_goal,500,10000,'Calorie goal');
+        db.prepare('UPDATE users SET steps_goal=?,calories_goal=? WHERE id=?').run(steps_goal,calories_goal,user.id);
+        return json(res,200,{user:db.prepare('SELECT id,name,email,role,steps_goal,calories_goal,gender,height_cm,weight_kg,bmi,birth_date,created_at,theme FROM users WHERE id=?').get(user.id)});
       }
       if (route === '/api/account' && req.method === 'DELETE') {
         const b=await readBody(req); const row=db.prepare('SELECT salt,password_hash FROM users WHERE id=?').get(user.id);
