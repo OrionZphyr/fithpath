@@ -1,4 +1,22 @@
 const $=selector=>document.querySelector(selector);
+function keepWordsAndNumbersOnly(field) {
+  const clean = value => String(value).replace(/\s+/g, ' ').replace(/[^\p{L}\p{N} ]/gu, '');
+  const cursor = field.selectionStart;
+  const before = field.value.slice(0, cursor ?? field.value.length);
+  const value = clean(field.value);
+  if (value === field.value) return;
+  field.value = value;
+  const next = clean(before).length;
+  field.setSelectionRange(next, next);
+}
+document.addEventListener('input', event => {
+  const field = event.target;
+  if (!(field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement)) return;
+  if (!field.matches('input:not([type]), input[type="text"], input[type="search"], textarea')) return;
+  if (field.closest('#auth-form, #login-form, #confirm-form')) return;
+  keepWordsAndNumbersOnly(field);
+});
+
 const loginPanel=$('#login-panel'),dashboard=$('#dashboard'),loginForm=$('#login-form');
 let accountRows=[];
 const expandedAccounts=new Set();
