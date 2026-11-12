@@ -180,9 +180,12 @@ function listLogs(userId, fromDate, toDate) {
   const meals = db.prepare(`SELECT fl.id,fl.food_id,fl.meal,fl.servings,fl.logged_at,f.name,f.serving,f.calories,f.protein,f.carbs,f.fat FROM food_logs fl JOIN foods f ON f.id=fl.food_id WHERE fl.user_id=? AND fl.logged_at BETWEEN ? AND ? ORDER BY fl.logged_at DESC`).all(userId,from,to);
   const body = db.prepare('SELECT * FROM body_metrics WHERE user_id=? AND logged_at BETWEEN ? AND ? ORDER BY logged_at DESC').all(userId,from,to);
   const sleep = db.prepare('SELECT * FROM sleep_logs WHERE user_id=? AND sleep_date BETWEEN ? AND ? ORDER BY sleep_date DESC').all(userId,fromDate,toDate);
-  const workouts = db.prepare(`SELECT ws.*, count(wset.id) AS set_count FROM workout_sessions ws LEFT JOIN workout_sets wset ON wset.session_id=ws.id WHERE ws.user_id=? AND ws.workout_date BETWEEN ? AND ? GROUP BY ws.id ORDER BY ws.workout_date DESC,ws.id DESC`).all(userId,fromDate,toDate);
+  const workouts = db.prepare(`SELECT ws.id,ws.user_id,ws.title,ws.workout_date,ws.notes,count(wset.id) AS set_count,coalesce(sum(wset.reps),0) AS total_reps FROM workout_sessions ws LEFT JOIN workout_sets wset ON wset.session_id=ws.id WHERE ws.user_id=? AND ws.workout_date BETWEEN ? AND ? GROUP BY ws.id ORDER BY ws.workout_date DESC,ws.id DESC`).all(userId,fromDate,toDate);
+  const workoutSets=db.prepare(`SELECT wset.session_id,wset.exercise_id,wset.reps,wset.weight_kg FROM workout_sets wset JOIN workout_sessions ws ON ws.id=wset.session_id WHERE ws.user_id=? AND ws.workout_date BETWEEN ? AND ? ORDER BY ws.workout_date DESC,ws.id DESC,wset.set_no`).all(userId,fromDate,toDate);
+  const setsByWorkout=new Map();for(const set of workoutSets){if(!setsByWorkout.has(set.session_id))setsByWorkout.set(set.session_id,[]);setsByWorkout.get(set.session_id).push(set);}
+  const workoutsWithSets=workouts.map(workout=>({...workout,sets:setsByWorkout.get(workout.id)||[]}));
   const goals = db.prepare('SELECT * FROM goals WHERE user_id=? ORDER BY id DESC').all(userId);
-  return { activities, meals, body, sleep, workouts, goals };
+  return { activities, meals, body, sleep, workouts:workoutsWithSets, goals };
 }
 async function handle(req,res) {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
@@ -271,11 +274,11 @@ async function handle(req,res) {
         db.prepare('INSERT INTO goals(user_id,title,metric,target,unit,deadline) VALUES(?,?,?,?,?,?)').run(user.id,title,metric,target,unit,deadline); return json(res,201,{ok:true});
       }
       if (route === '/api/workouts' && req.method === 'POST') {
-        const b=await readBody(req); const title=string(b.title,100,'Workout'); const date=validDate(b.date)?b.date:today(); const duration=number(b.duration,0,1440,'Duration'); const notes=string(b.notes,500,'Notes',true);
+        const b=await readBody(req); const title=string(b.title,100,'Workout'); const date=validDate(b.date)?b.date:today(); const notes=string(b.notes,500,'Notes',true);
         const sets=Array.isArray(b.sets)?b.sets.slice(0,100):[]; if (!sets.length) throw new ValidationError('Add at least one exercise set.');
-        const add=db.prepare('INSERT INTO workout_sessions(user_id,title,workout_date,duration_min,notes) VALUES(?,?,?,?,?)');
+        const add=db.prepare('INSERT INTO workout_sessions(user_id,title,workout_date,notes) VALUES(?,?,?,?)');
         const addSet=db.prepare('INSERT INTO workout_sets(session_id,exercise_id,set_no,reps,weight_kg,duration_sec,notes) VALUES(?,?,?,?,?,?,?)');
-        db.exec('BEGIN IMMEDIATE'); try { const result=add.run(user.id,title,date,duration,notes); sets.forEach((s,i)=>{const eid=number(s.exercise_id,1,1000000,'Exercise');if(!db.prepare('SELECT id FROM exercises WHERE id=?').get(eid))throw new ValidationError('Choose a listed exercise.');addSet.run(result.lastInsertRowid,eid,i+1,number(s.reps,0,10000,'Reps',true),number(s.weight_kg,0,2000,'Weight',true),number(s.duration_sec,0,86400,'Set duration',true),string(s.notes,250,'Set notes',true));});db.exec('COMMIT');} catch(e){db.exec('ROLLBACK');throw e;} return json(res,201,{ok:true});
+        db.exec('BEGIN IMMEDIATE'); try { const result=add.run(user.id,title,date,notes); sets.forEach((s,i)=>{const eid=number(s.exercise_id,1,1000000,'Exercise');if(!db.prepare('SELECT id FROM exercises WHERE id=?').get(eid))throw new ValidationError('Choose a listed exercise.');addSet.run(result.lastInsertRowid,eid,i+1,number(s.reps,1,10000,'Reps'),number(s.weight_kg,0,2000,'Weight',true),number(s.duration_sec,0,86400,'Set duration',true),string(s.notes,250,'Set notes',true));});db.exec('COMMIT');} catch(e){db.exec('ROLLBACK');throw e;} return json(res,201,{ok:true});
       }
       const editMatch=route.match(/^\/api\/edit\/(activity|food|body|sleep|goal|workout)\/(\d+)$/);
       if(editMatch&&req.method==='PATCH'){
@@ -295,7 +298,10 @@ async function handle(req,res) {
         }else if(kind==='goal'){
           const title=string(b.title,100,'Goal'),metric=['activity_minutes','weight_kg','workout_sessions'].includes(b.metric)?b.metric:'activity_minutes',target=number(b.target,1,100000,'Target'),unit=string(b.unit||'min',20,'Unit'),deadline=b.deadline&&validDate(b.deadline)?b.deadline:null;db.prepare('UPDATE goals SET title=?,metric=?,target=?,unit=?,deadline=? WHERE id=? AND user_id=?').run(title,metric,target,unit,deadline,id,user.id);
         }else{
-          const title=string(b.title,100,'Workout'),date=validDate(b.date)?b.date:today(),duration=number(b.duration,0,1440,'Duration'),notes=string(b.notes,500,'Notes',true);db.prepare('UPDATE workout_sessions SET title=?,workout_date=?,duration_min=?,notes=? WHERE id=? AND user_id=?').run(title,date,duration,notes,id,user.id);
+          const title=string(b.title,100,'Workout'),date=validDate(b.date)?b.date:today(),notes=string(b.notes,500,'Notes',true),sets=Array.isArray(b.sets)?b.sets.slice(0,100):[];
+          if(!sets.length)throw new ValidationError('Add at least one exercise set.');
+          const addSet=db.prepare('INSERT INTO workout_sets(session_id,exercise_id,set_no,reps,weight_kg,duration_sec,notes) VALUES(?,?,?,?,?,?,?)');
+          db.exec('BEGIN IMMEDIATE');try{db.prepare('UPDATE workout_sessions SET title=?,workout_date=?,notes=? WHERE id=? AND user_id=?').run(title,date,notes,id,user.id);db.prepare('DELETE FROM workout_sets WHERE session_id=?').run(id);sets.forEach((set,index)=>{const exerciseId=number(set.exercise_id,1,1000000,'Exercise');if(!db.prepare('SELECT id FROM exercises WHERE id=?').get(exerciseId))throw new ValidationError('Choose a listed exercise.');addSet.run(id,exerciseId,index+1,number(set.reps,1,10000,'Reps'),number(set.weight_kg,0,2000,'Weight',true),null,'');});db.exec('COMMIT');}catch(error){db.exec('ROLLBACK');throw error;}
         }
         return json(res,200,{ok:true});
       }
